@@ -1,18 +1,27 @@
-n=$(date +%Y%m%d%H)
+timestamp=$(date +%Y%m%d%H%M%S)
+experiment=TEST
+location=$HOSTNAME
+name=$experiment-$location-$timestamp
 
-p=$1
-
-if [ -z "$p" ]
-then p=200
+# These will have to be command line parameters with defaults in $HOME/.tour
+threads=30
+rounds=$1
+if [ -z "$rounds" ]
+then rounds=200
 fi
+engines="addw clts clts1 cltv"
 
-exec >tour-$n.log 2>&1
+econf=""
+for e in $engines
+do
+	econf="$econf -engine conf=$e"
+done
 
-date
+exec >$name.log 2>&1
 
-nohup ./cutechess-cli.sh -concurrency 7 -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament round-robin -event TEST-$n -games 2 -rounds $p -pgnout TEST-$n.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 \
-	-engine conf=exts \
-	-engine conf=addw \
-	-engine conf=cltv \
-	-engine conf=cltvf \
-	&
+echo "Experiment	$experiment"
+echo "Location	$location"
+echo "Timestamp	$timestamp"
+echo "Engines	$engines"
+
+nohup ./cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament round-robin -event $name -games 2 -rounds $rounds -pgnout $name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &
