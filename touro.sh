@@ -37,6 +37,12 @@ check_engine() {
 	fi
 }
 
+move_result() {
+	name=$1
+	cd $TOUR
+	mv running/$name take
+}
+
 while getopts ":r:t:T:" o
 do
 	#echo DEBUG $o $OPTIND $OPTARG
@@ -136,9 +142,11 @@ echo "]" >> engines.json
 
 exec >$name.log 2>&1
 
-echo "Experiment	$experiment"
-echo "Location	$location"
-echo "Timestamp	$timestamp"
-echo "Engines	$engines"
+echo "Experiment $experiment"
+echo "Location   $location"
+echo "Timestamp  $timestamp"
+echo "Engines    $engines"
+echo "Rounds: $rounds, threads: $threads"
 
-nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament round-robin -event $name -games 2 -rounds $rounds -pgnout $name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &
+nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament round-robin -event $name -games 2 -rounds $rounds -pgnout $name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &&
+	move_result $name &
