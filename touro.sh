@@ -41,15 +41,26 @@ move_result() {
 	name=$1
 	cd $TOUR
 	mv running/$name take
+	# cutechess-cli writes sometimes another pgn where the
+	# engines reside move it too
+	cd $ENGD
+	if [ -f ${name}.pgn ]
+	then
+		adir=$TOUR/take/${name}a
+		mkdir $adir
+		mv ${name}.pgn $adir/${name}a.pgn
+	fi
 }
 
-while getopts ":r:t:T:" o
+while getopts ":r:t:T:g" o
 do
 	#echo DEBUG $o $OPTIND $OPTARG
 	case "$o" in
 	'?')
 		echo "Wrong option: $OPTARG"
 		exit 1
+		;;
+	g)	a_ttype=gauntlet
 		;;
 	r)	a_rounds=$OPTARG
 		;;
@@ -95,17 +106,31 @@ then
 	exit 1
 fi
 
+if [[ $a_ttype ]]
+then
+	ttype=$a_ttype
+else
+	ttype=round-robin
+fi
+
 if [[ $a_rounds ]]
 then rounds=$a_rounds
 elif [[ $a_time ]]
-then en=$(echo $engines | wc -w)
-     minutes=4	# per game, should be computed from time parameters
-     # time=$(( $en * ($en - 1) * rounds * $minutes / $threads / 60 ))
-     rounds=$(( $a_time * $threads * 60 / ($en * ($en - 1) * $minutes) ))
-else rounds=${cf_rounds:-200}
+then
+	en=$(echo $engines | wc -w)
+	minutes=4	# per game, should be computed from time parameters
+	# Games per round:
+	if [[ $ttype == gauntlet ]]
+	then gpr=$(( 2 * ($en - 1) ))
+	else gpr=$(( $en * ($en - 1) ))
+	fi
+	# time=$(( $gpr * rounds * $minutes / $threads / 60 ))
+	rounds=$(( $a_time * $threads * 60 / ($gpr * $minutes) ))
+else
+	rounds=${cf_rounds:-200}
 fi
 
-echo $rounds rounds, $threads threads
+echo $ttype, $rounds rounds, $threads threads
 
 timestamp=$(date +%Y%m%d%H%M%S)
 experiment=TEST
@@ -148,5 +173,5 @@ echo "Timestamp  $timestamp"
 echo "Engines    $engines"
 echo "Rounds: $rounds, threads: $threads"
 
-nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament round-robin -event $name -games 2 -rounds $rounds -pgnout $name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &&
+nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament $ttype -event $name -games 2 -rounds $rounds -pgnout $name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &&
 	move_result $name &
