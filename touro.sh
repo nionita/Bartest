@@ -17,13 +17,23 @@ error() {
 	exit 1
 }
 
-# This should check if the engine is there and, if not, build it
-# Now is just place holder
-check_engine() {
+# This finds the engine by a simple logic of the binary name
+# We we will add later the possibility to search in a kind of engine
+# database, from where the correct description of the engine
+# (to write in the json file) will be retrieved
+# At last we could even build the engine from sources
+find_engine() {
 	eng=$1
 	cd $ENGD
-	ename=Barbarossa-0.2.0-$e
-	return 0
+	for ver in 0.2.0 0.1.0
+	do
+		if [ -x Barbarossa-${ver}-$e ]
+		then
+			ename=Barbarossa-${ver}-$e
+			return 0
+		fi
+	done
+	return 1
 	if [ -f $eng.making ]
 	then
 		while [ -f $eng.making ]
@@ -41,8 +51,8 @@ move_result() {
 	name=$1
 	cd $TOUR
 	mv running/$name take
-	# cutechess-cli writes sometimes another pgn where the
-	# engines reside move it too
+	# cutechess-cli writes sometimes another pgn where the engines reside
+	# move that one too
 	cd $ENGD
 	if [ -f ${name}.pgn ]
 	then
@@ -52,7 +62,7 @@ move_result() {
 	fi
 }
 
-while getopts ":r:t:T:g" o
+while getopts ":r:t:T:gf" o
 do
 	#echo DEBUG $o $OPTIND $OPTARG
 	case "$o" in
@@ -60,12 +70,13 @@ do
 		echo "Wrong option: $OPTARG"
 		exit 1
 		;;
+	f)	a_open=1
+		;;
 	g)	a_ttype=gauntlet
 		;;
 	r)	a_rounds=$OPTARG
 		;;
 	t)	a_threads=$OPTARG
-		#echo DEBUG set a_threads $a_threads
 		;;
 	T)	a_time=$OPTARG	# Time in hours
 		;;
@@ -130,6 +141,11 @@ else
 	rounds=${cf_rounds:-200}
 fi
 
+if [ -z "$a_open" ]
+then open="-openings file=$TOUR/swcr-4.1.pgn order=random"
+else open=""
+fi
+
 echo $ttype, $rounds rounds, $threads threads
 
 timestamp=$(date +%Y%m%d%H%M%S)
@@ -146,7 +162,7 @@ echo "[" > engines.json
 econf=""
 for e in $engines
 do
-	check_engine $e || error $name "Cannot find or build engine $e"
+	find_engine $e || error $name "Cannot find or build engine $e"
 
 	# Now create the entry in engines.json:
 	cd $TOUR/running/$name
@@ -173,5 +189,5 @@ echo "Timestamp  $timestamp"
 echo "Engines    $engines"
 echo "Rounds: $rounds, threads: $threads"
 
-nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament $ttype -event $name -games 2 -rounds $rounds -pgnout $name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &&
+nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament $ttype -event $name -games 2 -rounds $rounds $open -pgnout $TOUR/running/$name/$name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &&
 	move_result $name &

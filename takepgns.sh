@@ -1,28 +1,49 @@
 #!/bin/bash
 
 host=$1
-dir=get.$$
+if [ -z "$host" ]
+then
+	host=coreto
+fi
 
+dir=get.$$
 mkdir $dir
 cd $dir
 
-ssh $host bin/givepgns.sh | tar xfj -
+echo Take the tar file:
+ssh $host bin/givepgns.sh | tar xvfj -
 
-for d in *
-do
-	mv $d/$d.pgn ..
-	echo $d.pgn
-done
+if [ $? -eq 0 ]
+then
 
-cd ..
-rm -r $dir
+	echo After tar:
+	ls -l
 
-for f in TEST*.pgn
-do
-	echo $f
-	awk '$1=="[White" || $1=="[Black" {print $0}
-	     $1=="[Result" {print $0;print $2;print ""}' $f \
-		| sed -e 's/^"\(.*\)".*/\1/' >> results.pgn
-done
-gzip TEST*.pgn
-mv TEST*.pgn.gz pgns
+	echo Move pgsn files:
+	for d in *
+	do
+		mv $d/$d.pgn ..
+		echo $d.pgn
+	done
+
+	cd ..
+	rm -r $dir
+
+	echo Add to results.pgn:
+	for f in TEST*.pgn
+	do
+		echo $f
+		awk '$1=="[White" || $1=="[Black" {print $0}
+		$1=="[Result" {print $0;print $2;print ""}' $f \
+			| sed -e 's/^"\(.*\)".*/\1/' >> results.pgn
+	done
+
+	echo Gzip and backup:
+	gzip TEST*.pgn
+	mv TEST*.pgn.gz pgns
+
+	echo Done
+else
+	echo Tar ended with error, abort
+	exit 1
+fi
