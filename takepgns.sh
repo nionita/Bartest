@@ -50,9 +50,12 @@ mkdir ../pgns 2>/dev/null	# to be sure...
 for f in $flist
 do
 	echo $f
-	awk '$1=="[White" || $1=="[Black" {print $0}
-	     $1=="[Result" {print $0;print $2;print ""}' $f \
-		| sed -e 's/^"\(.*\)".*/\1/' >> ../results.pgn
+	awk '/^\[White/  {lin1=$0}
+		 /^\[Black/  {lin2=$0}
+		 /^\[Result/ {lin3=$0; rez=$2}
+		 /^\[Termination/ {
+			if ($2!~"time") {print lin1;print lin2;print lin3;print rez;print ""}
+			}' $f | sed -e 's/^"\(.*\)".*/\1/' >> ../results.pgn
 	gzip $f
 	mv $f.gz ../pgns
 done
