@@ -4,7 +4,7 @@ TOUR=~/Tour
 
 cd $TOUR
 tth=0
-
+date
 for f in running/*/*.log
 do
 	thr=$(head -6 $f | grep threads: | awk '{print $4}')
