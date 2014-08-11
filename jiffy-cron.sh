@@ -4,7 +4,9 @@
 # If some conditions are met, then it will start a tournament
 # with pre-configured engines
 
-ENGLIST=/home/nicu/Tour/.automatic
+TOUR=/home/nicu/Tour
+ENGLIST=$TOUR/.automatic
+STOP=$TOUR/.stop
 INIT=/home/nicu/bin/jiffy-init.sh
 TOURO=/home/nicu/bin/touro.sh
 
@@ -21,7 +23,7 @@ fi
 $INIT || exit 1
 
 # Check if we wanted to stop the automatic run:
-if [ -f $TOUR/.stop ]
+if [ -f $STOP ]
 then
 	echo $(date) - The stop file is present, exit
 	exit 0

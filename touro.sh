@@ -104,6 +104,13 @@ then
 	done
 fi
 
+# This is a workaround for jiffy1:
+hasize=512
+if [ -f $TOUR/.restricted ]
+then
+	hasize=256
+fi
+
 threads=${a_threads:-${cf_threads:-1}}
 
 if [[ -z $a_engines ]]
@@ -189,5 +196,5 @@ echo "Timestamp  $timestamp"
 echo "Engines    $engines"
 echo "Rounds: $rounds, threads: $threads"
 
-nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament $ttype -event $name -games 2 -rounds $rounds $open -pgnout $TOUR/running/$name/$name.pgn -recover -each option.Hash=512 tc=60+1 arg=-l arg=5 $econf &&
+nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament $ttype -event $name -games 2 -rounds $rounds $open -pgnout $TOUR/running/$name/$name.pgn -recover -each option.Hash=$hasize tc=60+1 arg=-l arg=5 $econf &&
 	move_result $name &
