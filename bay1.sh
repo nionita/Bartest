@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 (
 echo readpgn results.pgn
 echo elo
