@@ -49,22 +49,28 @@ debug = False
 
 main = do
     args <- getArgs
+    -- This function determines which condition should a game satisfy
+    -- in order to remain in the output pgn
+    -- Params are the white and black players
+    let f = case args of
+                "-v" : rest -> \w b -> not ((w `elem` rest) || (b `elem` rest))
+                _           -> \w b -> (w `elem` args) && (b `elem` args)
     glss <- grpLines . zip [1..] . lines <$> readFile "results.pgn"
-    mapM_ (perGame args) glss
+    mapM_ (perGame f) glss
 
-perGame :: [String] -> (Int, Int, [String]) -> IO ()
-perGame bles (ri, ro, ls) = do
+perGame :: (String -> String -> Bool) -> (Int, Int, [String]) -> IO ()
+perGame f (ri, ro, ls) = do
     let gs = concat $ intersperse " " ls
     case parseEntry gs of
         Left err -> when debug $ do
             putStrLn $ "\n*** Lines " ++ show ri ++ " to " ++ show ro
             putStrLn $ show err
             putStrLn gs
-        Right g  -> if white g `elem` bles || black g `elem` bles
-                       then return ()
-                       else do
+        Right g  -> if f (white g) (black g)
+                       then do
                            mapM_ putStrLn ls
                            putStrLn ""
+                       else return ()
 
 -- Group the lines per game, with beginning and ending line numbers
 grpLines :: [(Int, String)] -> [(Int, Int, [String])]

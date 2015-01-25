@@ -6,7 +6,7 @@
 cp results.pgn results.pgn.copy
 
 # Take the results
-for host in $(./cli-all-hosts G)
+for host in $(./cli-all-hosts.sh G)
 do
 	echo Taking the results from $host
 	./takepgns.sh $host
