@@ -9,8 +9,8 @@ import System.IO
 import System.IO.Error
 import System.Process
 
-rin = "j:\\Barbarossa\\"
-prf = "j:\\Barbarossa\\dist\\build\\Barbarossa\\"
+rin = "j:\\Engines\\Barbarossa\\"
+prf = "j:\\Engines\\Barbarossa\\"
 
 main = do
     (engine1:engine2:_) <- getArgs
@@ -47,7 +47,7 @@ lineUntil p h = do
     if p l then return l
            else lineUntil p h
 
-depth = 13	-- fix depth
+depth = 12	-- fix depth
 ttime = 480000
 
 runFen :: Handle -> Handle -> IO (Int, Int)

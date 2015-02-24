@@ -5,7 +5,7 @@ ahosts=$(./cli-all-hosts.sh R)
 elist=''
 for e in $*
 do
-	eng=Barbarossa-0.2.0-$e
+	eng=Barbarossa-0.3.0-$e
 	elist="$elist $eng"
 done
 

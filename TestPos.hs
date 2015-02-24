@@ -21,6 +21,7 @@ data Options = Options {
         optDepth   :: Maybe Int,	-- analyse depth (when creating the reference)
         optInpFile :: FilePath,		-- input file (test positions, reference results)
         optOutFile :: Maybe FilePath,	-- file (to create) with reference results
+        optMove    :: Bool,		-- laber each position with the best move instead of score
         optVerbose :: Bool		-- be explicit
     } deriving Show
 
@@ -31,6 +32,7 @@ defaultOptions = Options {
         optDepth   = Nothing,
         optInpFile = [],
         optOutFile = Nothing,
+        optMove    = False,
         optVerbose = False
     }
 
@@ -41,6 +43,7 @@ options = [
         Option "d" ["depth"]  (ReqArg setDepth  "INT")    "Analysis depth",
         Option "i" ["input"]  (ReqArg setInp    "STRING") "Input file with test positions",
         Option "o" ["output"] (ReqArg setOut    "STRING") "Output file (test pos & ref. scores)",
+        Option "m" ["move"]   (NoArg  setMove)            "Label positions with best move (def. score)",
         Option "v" ["verbose"] (NoArg setVerbose)         "Verbose output"
     ]
 
@@ -76,6 +79,9 @@ setInp file opt = opt { optInpFile = file }
 
 setOut :: String -> Options -> Options
 setOut file opt = opt { optOutFile = Just file }
+
+setMove :: Options -> Options
+setMove opt = opt { optMove = True }
 
 setVerbose :: Options -> Options
 setVerbose opt = opt { optVerbose = True }
@@ -121,7 +127,7 @@ referenceRun opt = do
     hSetBuffering hin  LineBuffering
     hSetBuffering hout LineBuffering
     setUp verb hin hout 64
-    mapM_ (perFenLineRef verb hin hout filo sdepth) $ map correctFen $ lines inp
+    mapM_ (perFenLineRef verb (optMove opt) hin hout filo sdepth) $ map correctFen $ lines inp
     hPutStrLn hin "quit"
     hClose filo
 
@@ -168,22 +174,37 @@ scoreFromInfo line osc
                           in if s == '-' then Just (-20000) else Just 20000
     | otherwise = osc
 
+-- Gather the last (best) move from engine output
+getBestMove :: String -> Maybe String -> Maybe String
+getBestMove line osc
+    | "bestmove" `isPrefixOf` line = Just $ moveFromInfo line
+    | otherwise                    = osc
+
+moveFromInfo :: String -> String
+moveFromInfo = head . drop 1 . words
+
 aggregateError :: Agreg -> Int -> Int -> Agreg
 aggregateError agr refsc sc
     = agr { agrCumErr = agrCumErr agr + fromIntegral (dif * dif), agrFenOk = agrFenOk agr + 1 }
     where dif = sc - refsc
 
 -- Execute for every Fen line for reference engine
-perFenLineRef :: Bool -> Handle -> Handle -> Handle -> String -> String -> IO ()
-perFenLineRef verb hi ho fo depth fen = do
+perFenLineRef :: Bool -> Bool -> Handle -> Handle -> Handle -> String -> String -> IO ()
+perFenLineRef verb move hi ho fo depth fen = do
     hPutStrLn hi $ "position fen " ++ fen
     hPutStrLn hi $ "go depth " ++ depth
     -- putStrLn $ "Fen: " ++ fen
-    msc <- accumLines verb ho endOfFen getBestScore Nothing
-    case msc of
-        Just sc -> hPutStrLn fo $ show sc ++ "\t" ++ fen
-        Nothing -> putStrLn $ "NONE" ++ "\t" ++ fen
-    -- threadDelay 3000	-- wait a bit in hope the engine will have time to breath
+    if move
+       then do
+           msc <- accumLines verb ho endOfFen getBestMove Nothing
+           case msc of
+               Just mv -> hPutStrLn fo $ mv ++ "\t" ++ fen
+               Nothing -> putStrLn $ "NONE" ++ "\t" ++ fen
+       else do
+           msc <- accumLines verb ho endOfFen getBestScore Nothing
+           case msc of
+               Just sc -> hPutStrLn fo $ show sc ++ "\t" ++ fen
+               Nothing -> putStrLn $ "NONE" ++ "\t" ++ fen
 
 -- Read lines until one condition occurs
 lineUntil :: Bool -> Handle -> (String -> Bool) -> IO String
@@ -200,7 +221,7 @@ accumLines verb h p f = go
     where go a = do
              l <- hGetLine h
              when verb $ putStrLn $ "aL: " ++ l
-             if p l then return a
+             if p l then return $! f l a
                     else go $! f l a
 
 -- Theese are here just in case we want more info (for statistics)
@@ -219,5 +240,6 @@ correctFen :: String -> String
 correctFen fen
     | fig : col : cast : ep : hm : nr : _ <- words fen
         = concat $ intersperse " " [fig, col, correct cast, ep, hm, nr]
+    | otherwise = fen
     where correct "----" = "-"	-- this has to be continued
-          correct x      = x	-- see http://de.wikipedia.org/wiki/Forsyth-Edwards-Notation
+          correct x = filter (/= '-') x	-- see http://de.wikipedia.org/wiki/Forsyth-Edwards-Notation

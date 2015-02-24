@@ -25,8 +25,9 @@ error() {
 find_engine() {
 	eng=$1
 	cd $ENGD
-	for ver in 0.2.0 0.1.0
+	for v in 3 2 1
 	do
+		ver="0.$v.0"
 		if [ -x Barbarossa-${ver}-$e ]
 		then
 			ename=Barbarossa-${ver}-$e
