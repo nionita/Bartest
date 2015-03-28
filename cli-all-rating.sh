@@ -16,6 +16,6 @@ esac
 for m in $ahosts
 do
 	echo Server $m
-	scp $ratf $m:'~/Tour/rating.next'
-	ssh $m 'cd ~/Tour; mv rating.next rating.txt'
+	scp $ratf $m:'~/Tour/.rating.next'
+	ssh $m 'cd ~/Tour; mv .rating.next .rating.txt'
 done

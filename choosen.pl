@@ -8,11 +8,22 @@ my $verbose = 0;
 $verbose = 1 if defined $ARGV[1] && $ARGV[1] eq "-v";
 
 my $base  = $ENV{HOME};
-my $rfile = "$base/Tour/rating.txt";
+my $rfile = "$base/Tour/.rating.txt";
+my $ifile = "$base/Tour/.inactive.txt";
 my $edir  = "$base/Engines";
 
 my %ratings;
+my %inactive;
 my $lastelo;
+
+# Engines listed in inactive will be ignored
+if (open INACT, $ifile) {
+	while (my $line = <INACT>) {
+		chomp $line;
+		$inactive{$line}++;	# one engine per line
+	}
+	close INACT;
+}
 
 # Collect the data about the engine ratings from the rating file
 open RATING, $rfile || die "Can't open rating file $rfile: $!\n";
@@ -51,6 +62,7 @@ for my $eng (@engs) {
 	next if !-f $eng || !-x $eng;	# must be executable file
 	$eng =~ /^Barbarossa-(\d+\.\d+\.\d+)-(.+)$/;
 	my ($ver, $short) = ($1, $2);
+	next if $inactive{$short};	# ignore inactive ones
 	if (exists $ratings{$short}) {
 		push @rated, $short;
 	} else {
@@ -58,8 +70,10 @@ for my $eng (@engs) {
 	}
 }
 
-print("We have " . scalar(@unrated) . " unrated and "
-	. scalar(@rated) . " rated engines\n") if $verbose;
+print("We have " . scalar(@unrated) . " unrated, "
+	. scalar(@rated) . " rated and " . scalar(keys %inactive)
+	. " inactive engines\n")
+	if $verbose;
 
 # Now we choose the engines to run next tournament
 # We always take at least one rated engine in the list, to have
