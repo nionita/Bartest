@@ -25,7 +25,7 @@ error() {
 find_engine() {
 	eng=$1
 	cd $ENGD
-	for v in 3 2 1
+	for v in 4 3 2 1
 	do
 		ver="0.$v.0"
 		if [ -x Barbarossa-${ver}-$e ]
@@ -63,7 +63,7 @@ move_result() {
 	fi
 }
 
-while getopts ":r:t:T:gf" o
+while getopts ":a:b:l:h:t:T:r:pf" o
 do
 	#echo DEBUG $o $OPTIND $OPTARG
 	case "$o" in
@@ -71,15 +71,23 @@ do
 		echo "Wrong option: $OPTARG"
 		exit 1
 		;;
-	f)	a_open=1
+	f)	a_open=1	# no pgn file for openings
 		;;
-	g)	a_ttype=gauntlet
+	p)	a_pre=1	# pre test: -1.5 to 4.5, otherwise 0 to 6
 		;;
-	r)	a_rounds=$OPTARG
+	a)	a_alpha=$OPTARG
+		;;
+	b)	a_beta=$OPTARG
+		;;
+	l)	a_low=$OPTARG
+		;;
+	h)	a_high=$OPTARG
+		;;
+	r)	a_rounds=$OPTARG	# max rounds
 		;;
 	t)	a_threads=$OPTARG
 		;;
-	T)	a_time=$OPTARG	# Time in hours
+	T)	a_time=$OPTARG	# max time in hours
 		;;
 	*)	echo What?
 		echo $o $OPTARG $OPTIND
@@ -112,24 +120,35 @@ then
 	hasize=256
 fi
 
+if [[ -z "$a_pre" ]]
+then
+	d_low=0
+	d_high=6
+	d_alpha=0.05
+	d_beta=0.05
+else
+	d_low=-1.5
+	d_high=4.5
+	d_alpha=0.15
+	d_beta=0.15
+fi
+
 threads=${a_threads:-${cf_threads:-1}}
+alpha=${a_alpha:-${cf_alpha:-$d_alpha}}
+beta=${a_beta:-${cf_beta:-$d_beta}}
+low=${a_low:-${cf_low:-$d_low}}
+high=${a_high:-${cf_high:-$d_high}}
 
 if [[ -z $a_engines ]]
 then engines=$cf_engines
-else engines=$*
+else engines=$a_engines
 fi
 
-if [[ -z $engines ]]
+en=$(echo $engines | wc -w)
+if [[ $en != 2 ]]
 then
-	echo No engines specified in command line or config file
+	echo Exactly 2 engines have to be specified in command line or config file
 	exit 1
-fi
-
-if [[ $a_ttype ]]
-then
-	ttype=$a_ttype
-else
-	ttype=round-robin
 fi
 
 if [[ $a_rounds ]]
@@ -139,12 +158,8 @@ then
 	en=$(echo $engines | wc -w)
 	minutes=4	# per game, should be computed from time parameters
 	# Games per round:
-	if [[ $ttype == gauntlet ]]
-	then gpr=$(( 2 * ($en - 1) ))
-	else gpr=$(( $en * ($en - 1) ))
-	fi
-	# time=$(( $gpr * rounds * $minutes / $threads / 60 ))
-	rounds=$(( $a_time * $threads * 60 / ($gpr * $minutes) ))
+	# time=$(( rounds * $minutes / $threads / 60 ))
+	rounds=$(( $a_time * $threads * 60 / $minutes ))
 else
 	rounds=${cf_rounds:-200}
 fi
@@ -154,7 +169,8 @@ then open="-openings file=$TOUR/swcr-4.1.pgn order=random"
 else open=""
 fi
 
-echo $ttype, $rounds rounds, $threads threads
+echo SPRT, $rounds rounds, $threads threads, engines: $engines
+echo low=$low, high=$high, alpha=$alpha, beta=$beta
 
 timestamp=$(date +%Y%m%d%H%M%S)
 experiment=TEST
@@ -197,5 +213,5 @@ echo "Timestamp  $timestamp"
 echo "Engines    $engines"
 echo "Rounds: $rounds, threads: $threads"
 
-nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -tournament $ttype -event $name -games 2 -rounds $rounds $open -pgnout $TOUR/running/$name/$name.pgn -recover -each restart=on option.Hash=$hasize tc=60+1 arg=-l arg=5 $econf &&
+nohup $CUTE/cutechess-cli.sh -concurrency $threads -draw movenumber=20 movecount=5 score=5 -resign movecount=5 score=800 -event $name -sprt elo0=$low elo1=$high alpha=$alpha beta=$beta -rounds $rounds $open -pgnout $TOUR/running/$name/$name.pgn -recover -each restart=on option.Hash=$hasize tc=60+1 arg=-l arg=5 $econf &&
 	move_result $name &

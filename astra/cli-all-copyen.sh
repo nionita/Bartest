@@ -6,7 +6,7 @@ cd /j/Projects/MakeEc2/Engines
 elist=''
 for e in $*
 do
-	eng=Barbarossa-0.3.0-$e
+	eng=Barbarossa-0.4.0-$e
 	elist="$elist $eng"
 	scp 'coreto:~/Engines/'$eng .
 done
