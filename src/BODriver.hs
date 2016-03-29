@@ -1,3 +1,7 @@
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main (main) where
 
 -- This is a program to optimise chess engine parameters by running tournaments with cutechess-cli
@@ -10,53 +14,40 @@ module Main (main) where
 -- - cutechess-cli configuration (times/depths, positions database, draw/adjudication conditions etc)
 -- - parameters to be optimised (name, range)
 
-import           Prelude hiding (catch)
-import           Control.Applicative ((<$>), (<*>))
-import           Control.Concurrent
-import           Control.Concurrent.Async
+-- import           Control.Applicative ((<$>), (<*>))
+-- import           Control.Concurrent
+-- import           Control.Concurrent.Async
 import           Control.Exception
-import qualified Data.ByteString.Char8 as B
-import           Data.Char (isSpace)
+import           Control.Monad
+-- import qualified Data.ByteString.Char8 as B
+import           Data.Char (ord)
 import           Data.IORef
-import           Data.List (intersperse, isPrefixOf, sortBy, groupBy, delete)
-import qualified Data.Map as M
-import           Data.Maybe
+import           Data.List (isPrefixOf)
+-- import qualified Data.Map as M
+-- import           Data.Maybe
+import           Data.Ratio
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector.Storable as V
 import           Data.Yaml
+-- import           Optimisation.Stochastic.BayesOpt
+import           BayesOpt
 import           System.Directory
 import           System.Environment (getArgs)
 import           System.FilePath
 import           System.IO
-import           System.IO.Error hiding (catch)
+import           System.IO.Error
 import           System.Process
-import           System.Random
-import           System.Time (getClockTime)
-
--- Some constants for playing one match
-cuteChessDir = "J:\\Chess\\cutechess-cli-0.6.0-win32"
-cuteChessCom = cuteChessDir ++ "\\cutechess-cli.exe"
+-- import           System.Time (getClockTime)
 
 -- We have to use the first parameter from CLOP twofold:
 -- first part will be a subdirectory in which the CLOP learn session will run
 -- second part will a unique identifier for the parallel process
 -- The 2 parts are delimitted by an underscore "_"
+main :: IO ()
 main = do
-    (proc : seed : params)  <- getArgs
-    let dict = makeDict params
-        (session, thread) = break (== '_') proc
-    res <- runGame session thread seed dict
-    putStrLn res
-
--- Take a list of param/values sequence (as strings) and structure it
--- in form [(param, value)]
-makeDict :: [String] -> [(String, Double)]
-makeDict ss = go Nothing ss []
-    where go Nothing [] acc = acc
-          go _       [] _   = error "Unmatched param/value sequence"
-          go Nothing  (p:ps) acc = go (Just p) ps acc
-          go (Just p) (v:ps) acc = go Nothing  ps ((p, read v):acc)
+    (rootdir : _) <- getArgs
+    prepareGames rootdir
 
 -- This data has to be passed to our callback, so it can do its work
 -- But we must change it during the callback, so we will pass a reference to it
@@ -64,11 +55,13 @@ data RunState = RunState {
                     rsCCC    :: FilePath,     -- how to start cutechess-cli
                     rsEvent  :: String,       -- event name used for file names
                     rsRoot   :: FilePath,     -- root directory, used to start there
-                    rsParams :: [Strings],    -- param list needed to write engine config
+                    rsParams :: [String],     -- param list needed to write engine config
+                    rsArgs   :: [String],     -- arguments for cutechess-cli
                     rsLast   :: Int,          -- last run number
                     rsChaEng :: String,       -- the learning engine name
                     rsMaxPts :: Double        -- max number of points
                 }
+    deriving Show
 
 -- This will prepare the begin of the match and return a run state
 -- which can be used to begin the optimisation
@@ -86,9 +79,63 @@ data RunState = RunState {
 --   run, which contain the parameters for that run
 -- While the optimisation runs, there will be a running file (empty), which will
 -- be deleted on complition.
-prepareGames :: FilePath -> IO RunState
+prepareGames :: FilePath -> IO ()
 prepareGames rootdir = do
-    createDirectoryIfMissing True refcurr
+    setCurrentDirectory rootdir
+    cfe <- doesFileExist "boconfig.cfg"
+    when (not cfe) $ fail "Config file boconfig.cfg does not exist in the given directory"
+    mconf <- decodeFileEither "boconfig.cfg"
+    case mconf of
+        Left ye      -> fail $ "Existing config file does not parse: " ++ show ye
+        Right config -> do
+            -- create directories
+            createDirectoryIfMissing False "logdir"
+            createDirectoryIfMissing False "pgnout"
+            eco <- openFile "engines.json" WriteMode
+            hPutStrLn eco "["
+            engines <- forM (zip (False:repeat True)
+                                 (coChaEng config : coRefEngs config)) $ \(komma, e) -> do
+                let ename = T.unpack (engName e)
+                let edir = "cwd-" ++ ename
+                createDirectoryIfMissing False edir
+                when (komma) $ hPutStrLn eco $ tab ++ ","
+                hPutStrLn eco $ tab ++ "{"
+                hPutStrLn eco $ tab ++ tab ++ qot ++ "name" ++ qot ++ " : "
+                                ++ qot ++ ename ++ qot ++ ","
+                hPutStrLn eco $ tab ++ tab ++ qot ++ "command" ++ qot ++ " : "
+                                ++ qot ++ engBin e ++ qot ++ ","
+                hPutStrLn eco $ tab ++ tab ++ qot ++ "workingDirectory" ++ qot ++ " : "
+                                -- </> makes problems in Windows:
+                                ++ qot ++ rootdir ++ "/" ++ edir ++ qot ++ ","
+                hPutStrLn eco $ tab ++ tab ++ qot ++ "protocol" ++ qot ++ " : "
+                                ++ qot ++ T.unpack (engProto e) ++ qot
+                hPutStrLn eco $ tab ++ "}"
+                return ename
+            hPutStrLn eco "]"
+            hClose eco
+            let rs = RunState {
+                         rsCCC    = coCCC config,
+                         rsEvent  = T.unpack (toEvent $ coTour config),
+                         rsRoot   = rootdir,
+                         rsParams = map (T.unpack . opParam) $ coParams config,
+                         rsArgs   = mkCutechessCommand config,
+                         rsLast   = 0,
+                         rsChaEng = head engines,
+                         rsMaxPts = fromIntegral $ toRounds (coTour config) * 2
+                                        * (length engines - 1)
+                     }
+            -- putStrLn "The run state:"
+            -- print rs
+            let vl = V.fromList $ map opLower $ coParams config
+                vu = V.fromList $ map opUpper $ coParams config
+            rrs <- newIORef rs
+            (r, vr) <- bayesOptim runGame rrs vl vu
+            putStrLn $ "minimus is: " ++ show r
+            putStrLn "for following parameters:"
+            forM_ (zip (rsParams rs) (V.toList vr))
+                $ \(pn, val) -> putStrLn $ " - " ++ pn ++ " = " ++ show val
+    where tab = "\t"
+          qot = "\""
 
 -- This is the callback of the optimisation process, the function
 -- which will be called to acquire the target value for some parameter values
@@ -100,32 +147,31 @@ prepareGames rootdir = do
 -- Other command line options can be given in the global config file (for all engines)
 runGame :: Callback (IORef RunState)
 runGame rsref v = do
-    tod <- getClockTime
+    -- tod <- getClockTime
     rs  <- readIORef rsref
     let crtrun  = rsLast rs + 1
         runname = rsEvent rs ++ "-run-" ++ show crtrun
         logfile = rsRoot rs </> "logdir" </> (runname ++ ".log")
         pgnout  = rsRoot rs </> "pgnout" </> (runname ++ ".pgn")
-        engcfg  = rsRoot rs </> ("cwd-" ++ challenger) </> (runname ++ ".cfg")
+        engcfg  = rsRoot rs </> ("cwd-" ++ rsChaEng rs) </> (runname ++ ".cfg")
     -- write a new log file:
-    writeFile logfile $ "New run " ++ runname ++ " started at "
-        ++ (calendarTimeToString $ toCalendarTime tod) ++ "\n"
+    --     ++ (calendarTimeToString $ toCalendarTime tod) ++ "\n"
     -- write engine config file:
-    writeFile engcfg $ unlines $ map toEngConfLine $ zip rsParams $ V.toList v
-    setCurrentDirectory $ rsRoot rs
-    let args = addCutechessPgnOut pgnout (rsArgs rs)
-    pts <- fromIntegral <$> oneMatch (rsCCC rs) args (rsChaEng rs)
+    writeFile engcfg $ unlines $ map toEngConfLine $ zip (rsParams rs) $ V.toList v
+    let args = addCutechessPgnOut (rsChaEng rs) engcfg pgnout (rsArgs rs)
+    writeFile logfile $ unlines [
+        "New run " ++ runname ++ " started",
+        "Start: " ++ show (rsCCC rs),
+        "with args: " ++ show args
+        ]
+    pts <- fromRational <$> oneMatch (rsCCC rs) args (rsChaEng rs)
     writeIORef rsref $ rs { rsLast = crtrun }
     -- return difference to maximum, so that minimize will maximize the performance
     return $! (rsMaxPts rs - pts) / rsMaxPts rs
 
--- Learning engine name as a string
-challenger :: Config -> String
-challenger = T.unpack . engName . coChaEng
-
 -- Make an engine config line for one param & value
-toEngConfLine :: (OptParam, Double) -> String
-toEngConfLine (op, v) = T.unpack (opParam op) ++ "=" ++ show (round v :: Int)
+toEngConfLine :: (String, Double) -> String
+toEngConfLine (pa, v) = pa ++ "=" ++ show (round v :: Int)
 
 {--
 baseDir :: String -> FilePath
@@ -143,8 +189,8 @@ makeDirs base thread = do
 -- Data types used in configuration:
 data Engine = Engine {
                   engName, engProto :: Text,
-                  engBin  :: FilePath,
-                  engArgs :: [Text]
+                  engBin  :: FilePath
+                  -- engArgs :: [Text]
               }
 
 data Draw = Draw {
@@ -152,23 +198,25 @@ data Draw = Draw {
             }
 
 data Resign = Resign {
-                  rsMoveCnt, rsScore :: Int
+                  reMoveCnt, reScore :: Int
               }
 
 -- Simplified time control
 -- Times in seconds, for now only integers
 -- but it should be double, for very short time controls
 data TimeControl = TimeControl {
-                       tcMoves, tcTotal, tcPerMv :: Maybe Int,
+                       tcMoves, tcTotal, tcPerMv :: Maybe Int
                    }
 
 data Tour = Tour {
                 toEvent   :: Text,
                 toTimes   :: TimeControl,
-                toPgnIn   :: Maybe FilePath,
+                toRounds  :: Int,
+                toHash    :: Int,
+                toPgnIn   :: Maybe Text,
                 toDraw    :: Draw,
                 toResign  :: Resign,
-                toThreads :: Int
+                toThreads :: Maybe Int
             }
 
 data OptParam = OptParam {
@@ -177,7 +225,7 @@ data OptParam = OptParam {
                 }
 
 data Config = Config {
-                  coCCC     :: FilePath,	-- how to start cutechess-cli (full path)
+                  coCCC     :: FilePath,  -- how to start cutechess-cli (full path)
                   coTour    :: Tour,
                   coChaEng  :: Engine,
                   coRefEngs :: [Engine],
@@ -189,65 +237,66 @@ instance FromJSON Engine where
     parseJSON (Object v) = Engine <$>
                                v .: "engine" <*>
                                v .: "proto"  <*>
-                               v .: "binary" <*>
-                               v .: "cwd"    <*>
-                               v .: "args"
+                               v .: "binary" -- <*>
+                               -- v .: "args"
     parseJSON x           = error $ "Not en engine description: " ++ show x
 
 instance FromJSON Draw where
-    fromJSON (Object v) = Draw <$>
-                              v .: "moveno" <*>
+    parseJSON (Object v) = Draw <$>
+                              v .: "moveno"  <*>
                               v .: "movecnt" <*>
                               v .: "score"
-    fromJSON x          = error $ "Not a draw description: " ++ show x
+    parseJSON x          = error $ "Not a draw description: " ++ show x
 
 instance FromJSON Resign where
-    fromJSON (Object v) = Resign <$>
-                              v .: "mvecnt" <*>
+    parseJSON (Object v) = Resign <$>
+                              v .: "movecnt" <*>
                               v .: "score"
-    fromJSON x          = error $ "Not a tour description: " ++ show x
+    parseJSON x          = error $ "Not a tour description: " ++ show x
 
 instance FromJSON TimeControl where
-    fromJSON (Object v) = TimeControl <$>
+    parseJSON (Object v) = TimeControl <$>
                               v .:? "moves" <*>
                               v .:? "total" <*>
                               v .:? "per-move"
-    fromJSON x          = error $ "Not a time control description: " ++ show x
+    parseJSON x          = error $ "Not a time control description: " ++ show x
 
 instance FromJSON Tour where
-    fromJSON (Object v) = Tour <$>
+    parseJSON (Object v) = Tour <$>
                               v .:  "event"   <*>
-                              v .:  "time-control"
+                              v .:  "time-control"  <*>
+                              v .:  "rounds"  <*>
+                              v .:  "hash"    <*>
                               v .:? "pgn-in"  <*>   -- optional
-                              v .:  "pgn-out" <*>
                               v .:  "draw"    <*>
-                              v .:  "resign"
-    fromJSON x          = error $ "Not a tour description: " ++ show x
+                              v .:  "resign"  <*>
+                              v .:?  "threads"
+    parseJSON x          = error $ "Not a tour description: " ++ show x
 
 instance FromJSON OptParam where
-    fromJSON (Object v) = OptParam <$>
+    parseJSON (Object v) = OptParam <$>
                               v .: "param" <*>
                               v .: "from"  <*>
                               v .: "to"
-    fromJSON x          = error $ "Not an optimisation parameter: " ++ show x
+    parseJSON x          = error $ "Not an optimisation parameter: " ++ show x
 
 instance FromJSON Config where
-    fromJSON (Object v) = Config <$>
+    parseJSON (Object v) = Config <$>
                               v .: "cutechess" <*>
                               v .: "tour"      <*>
                               v .: "engine"    <*>
                               v .: "engines"   <*>
                               v .: "params"
-    fromJSON x          = error $ "Error in config: " ++ show x
+    parseJSON x          = error $ "Error in config: " ++ show x
 
-addCutechessPgnOut :: FilePath -> [String] -> [String]
-addCutechessPgnOut path args = pgnout ++ args
-    where pgnout = [ "-pgnout", path ]
+addCutechessPgnOut :: String -> FilePath -> FilePath -> [String] -> [String]
+addCutechessPgnOut me engcf path args = pgnout ++ args
+    where pgnout = [ "-pgnout", path, "-engine", "conf=" ++ me, "arg=-c", "arg=" ++ engcf ]
 
 -- Return a list of parameters for the cutechess-cli command
 mkCutechessCommand :: Config -> [String]
-mkCutechessCommand config = site ++ event ++ cont ++ draw ++ resi ++ ttype ++ games ++ rounds
-                            ++ open ++ pgnout ++ rest ++ econf
+mkCutechessCommand config = site ++ event ++ conc ++ draw ++ resi ++ ttype ++ games ++ rounds
+                            ++ open ++ rest ++ econf
     where tour   = coTour config
           site   = [ "-site", "Sixpack" ]
           event  = [ "-event", T.unpack (toEvent tour) ]
@@ -257,8 +306,8 @@ mkCutechessCommand config = site ++ event ++ cont ++ draw ++ resi ++ ttype ++ ga
           draw   = [ "-draw", "movenumber=" ++ show (drMoveNo $ toDraw tour),
                      "movecount=" ++ show (drMoveCnt $ toDraw tour),
                      "score=" ++ show (drScore $ toDraw tour) ]
-          resi   = [ "-resign", "movecount=" ++ show (rsMoveCnt $ toResign tour),
-                     "score=" ++ show (rsScore $ toResign tour) ]
+          resi   = [ "-resign", "movecount=" ++ show (reMoveCnt $ toResign tour),
+                     "score=" ++ show (reScore $ toResign tour) ]
           ttype  = [ "-tournament", "gauntlet" ]
           games  = [ "-games", "2" ]                          -- make configurable?
           rounds = [ "-rounds", show (toRounds tour) ]
@@ -266,37 +315,8 @@ mkCutechessCommand config = site ++ event ++ cont ++ draw ++ resi ++ ttype ++ ga
                        Just pgnin -> [ "-openings", "file=" ++ T.unpack pgnin, "order=random" ]
                        Nothing    -> []
           rest   = [ "-recover", "-each", "restart=on", "option.Hash=" ++ show (toHash tour),
-                     "tc=", timeControl tour ]
-          econf  = concatMap (\e -> [ "-engine", "conf=" ++ T.unpack (engName e)])
-                       $ coChaEng config : coRefEngs config
-          eng1 = [	-- the learning engine
-              "-engine",
-              "name=" ++ takeFileName (dcChaEngine dcf),
-              "cmd=" ++ dcChaEngine dcf,
-              "dir=" ++ chacurr,
-              "proto=" ++ dcChaProto dcf
-              ] ++ words chatime
-                ++ map (\(n,v) -> "arg=-p" ++ n ++ "=" ++ show v) dict
-                ++ optArgs dcf dcChaArgs
-          eng2 = [	-- the reference engine
-              "-engine",
-              "name=" ++ takeFileName (dcRefEngine dcf),
-              "cmd=" ++ dcRefEngine dcf,
-              "dir=" ++ refcurr,
-              "proto=" ++ dcRefProto dcf
-              ] ++ words reftime
-                ++ optArgs dcf dcRefArgs
-          args = if white then common ++ eng1 ++ eng2 else common ++ eng2 ++ eng1
-          pgnout = base </> ("thr" ++ thread ++ ".pgn")
-          -- When we give depth, this has priority and no time control is requested
-          chatime | dcChaDepth dcf /= 0   = "tc=inf depth=" ++ show (dcChaDepth dcf)
-                  | null (dcChaMoves dcf) = "tc=" ++ dcChaFixTm dcf ++ "+" ++ dcChaSecPerMv dcf
-                  | otherwise             = "tc=" ++ dcChaMoves dcf ++ "/"
-                                               ++ dcChaFixTm dcf ++ "+" ++ dcChaSecPerMv dcf
-          reftime | dcRefDepth dcf /= 0   = "tc=inf depth=" ++ show (dcRefDepth dcf)
-                  | null (dcRefMoves dcf) = "tc=" ++ dcRefFixTm dcf ++ "+" ++ dcRefSecPerMv dcf
-                  | otherwise             = "tc=" ++ dcRefMoves dcf ++ "/"
-                                               ++ dcRefFixTm dcf ++ "+" ++ dcRefSecPerMv dcf
+                     "tc=" ++ timeControl (toTimes tour) ]
+          econf  = concatMap (\e -> [ "-engine", "conf=" ++ T.unpack (engName e)]) $ coRefEngs config
 
 timeControl :: TimeControl -> String
 timeControl (TimeControl { .. })
@@ -311,7 +331,7 @@ timeControl (TimeControl { .. })
                             Nothing -> tot
                             Just pm -> tot ++ "+" ++ show pm
 
-oneMatch :: FilePath -> [String] -> String -> IO Int
+oneMatch :: FilePath -> [String] -> String -> IO Rational
 oneMatch cccBin args me = do
     (_, Just hout, _, ph)
             <- createProcess (proc cccBin args) { std_out = CreatePipe }
@@ -325,7 +345,7 @@ everyLine :: String -> Handle -> Rational -> IO Rational
 everyLine me h = go
     where go !r = do
               lin <- hGetLine h
-              -- when debug $ putStrLn $ "Got: " ++ lin
+              putStrLn $ "Got: " ++ lin
               if "Rank Name " `isPrefixOf` lin
                  then return r
                  else if "Finished game " `isPrefixOf` lin
@@ -345,76 +365,3 @@ getScore line me
           (w:_:b:_) = rez
           whiteRez  = fromIntegral $ ord w - ord '0'
           blackRez  = fromIntegral $ ord b - ord '0'
-
-optArgs dcf f = if null (f dcf) then [] else map (\w -> "arg=" ++ w) (words $ f dcf)
-
-readDriverConfig = stringToConfig <$> readFile "ClopDriver.txt"
-
-stringToConfig :: String -> DriverConfig
-stringToConfig = foldr (\(n, s) dc -> lookApply n s dc funlist) defDC
-                       . catMaybes . map readParam . noComments . lines
-    where defDC = DC {
-              dcRefEngine = "J:\\Barbarossa\\dist\\build\\Barbarossa\\Barbarossa_0_01_k3nmd.exe",
-              dcRefArgs   = "-l5",
-              dcChaEngine = "J:\\Barbarossa\\dist\\build\\Barbarossa\\Barbarossa_0_01_castp.exe",
-              dcChaArgs   = "-l2",
-              -- dcChaConfig = "J:\\AbaAba\\dist\\build\\Abulafia\\test1-51-6.txt",
-              -- dcRefMoves = "40", dcRefFixTm = "20", dcRefSecPerMv = "0.2",
-              -- dcChaMoves = "40", dcChaFixTm = "20", dcChaSecPerMv = "0.2",
-              dcRefDepth = 0,
-              dcChaDepth = 0,
-              dcRefMoves = "", dcRefFixTm = "120", dcRefSecPerMv = "1",
-              dcChaMoves = "", dcChaFixTm = "120", dcChaSecPerMv = "1",
-              dcRefProto = "uci", dcChaProto = "uci",
-              dcAnlFile  = "",	-- when those are both defined (/="" and /=0)
-              dcAnlCount = 0	-- then the analysis version of the "game" is performed
-          }
-          setRefEngine   s dc = dc { dcRefEngine   = s }
-          setRefArgs     s dc = dc { dcRefArgs     = s }
-          setRefMoves    s dc = dc { dcRefMoves    = s }
-          setRefFixTm    s dc = dc { dcRefFixTm    = s }
-          setRefSecPerMv s dc = dc { dcRefSecPerMv = s }
-          setRefDepth    s dc = dc { dcRefDepth    = read s }
-          setRefProto    s dc = dc { dcRefProto    = s }
-          setChaEngine   s dc = dc { dcChaEngine   = s }
-          setChaArgs     s dc = dc { dcChaArgs     = s }
-          setChaMoves    s dc = dc { dcChaMoves    = s }
-          setChaFixTm    s dc = dc { dcChaFixTm    = s }
-          setChaSecPerMv s dc = dc { dcChaSecPerMv = s }
-          setChaDepth    s dc = dc { dcChaDepth    = read s }
-          setChaProto    s dc = dc { dcChaProto    = s }
-          setAnlFile     s dc = dc { dcAnlFile     = s }
-          setAnlCount    s dc = dc { dcAnlCount    = read s }
-          funlist = [ ("RefEngine",   setRefEngine),
-                      ("RefArgs",     setRefArgs),
-                      ("RefMoves",    setRefMoves),
-                      ("RefFixTm",    setRefFixTm),
-                      ("RefDepth",    setRefDepth),
-                      ("RefSecPerMv", setRefSecPerMv),
-                      ("RefProto",    setRefProto),
-                      ("ChaEngine",   setChaEngine),
-                      ("ChaArgs",     setChaArgs),
-                      ("ChaMoves",    setChaMoves),
-                      ("ChaFixTm",    setChaFixTm),
-                      ("ChaDepth",    setChaDepth),
-                      ("ChaSecPerMv", setChaSecPerMv),
-                      ("ChaProto",    setChaProto),
-                      ("AnlFile",     setAnlFile),
-                      ("AnlCount",    setAnlCount) ]
-          noComments = filter (not . isComment)
-          isComment ""                 = True
-          isComment ('-':'-':_)        = True
-          isComment (c:cs) | isSpace c = isComment cs
-          isComment _                  = False
-
-type Setter a = String -> a -> a
-
-lookApply :: String -> String -> a -> [(String, Setter a)] -> a
-lookApply s v a = maybe a (($ a) . ($ v)) . lookup s
-
-readParam :: String -> Maybe (String, String)
-readParam s = let (ns, vs) = span (/= '=') s
-              in case vs of
-                     ('=' : rs) -> Just (strip ns, strip rs)
-                     _          -> Nothing	-- did not contain '='
-    where strip = filter (not . isSpace)
