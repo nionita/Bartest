@@ -38,11 +38,13 @@ bayesOptim
     -> V.Vector Double
     -> V.Vector Double
     -> Int
+    -> Double
     -> IO (Double, V.Vector Double)
-bayesOptim f a lv uv ite = do
+bayesOptim f a lv uv ite noi = do
     let dim   = V.length lv
         dim_c = fromIntegral dim
         ite_c = fromIntegral ite
+        noi_c = coerce noi :: CDouble
         clv   = coerce lv :: V.Vector CDouble
         cuv   = coerce uv :: V.Vector CDouble
     -- This is the C callback function, where we make some parameter
@@ -64,8 +66,8 @@ bayesOptim f a lv uv ite = do
             bp = initialize_parameters_to_default();
             // Ad-hoc parameter settings - will have to expose some functions for this
             bp.n_iterations   = $(int ite_c);
-            bp.noise          = 0.5;
-            bp.n_iter_relearn = 5;
+            bp.noise          = $(double noi_c);
+            bp.n_iter_relearn = 2;
             bp.n_init_samples = 5;
             bp.verbose_level = 2;
             set_load_file(&bp, "boload.dat");

@@ -54,7 +54,8 @@ data RunState = RunState {
                     rsArgs   :: [String],     -- arguments for cutechess-cli
                     rsLast   :: Int,          -- last run number
                     rsChaEng :: String,       -- the learning engine name
-                    rsMaxPts :: Double        -- max number of points
+                    rsMaxPts :: Double,       -- max number of points
+                    rsRepls  :: [Double]      -- to use for replays
                 }
     deriving Show
 
@@ -113,7 +114,9 @@ prepareGames rootdir = do
                 return ename
             hPutStrLn eco "]"
             hClose eco
-            let rs = RunState {
+            let rep = coReplay config
+                replays = reStart rep : map (nextReplay (reRest rep)) replays
+                rs = RunState {
                          rsCCC    = coCCC config,
                          rsEvent  = T.unpack (toEvent $ coTour config),
                          rsRoot   = rootdir,
@@ -122,23 +125,34 @@ prepareGames rootdir = do
                          rsLast   = 0,
                          rsChaEng = head engines,
                          rsMaxPts = fromIntegral $ toRounds (coTour config) * 2
-                                        * (length engines - 1)
+                                        * (length engines - 1),
+                         rsRepls  = replays
                      }
-            -- putStrLn "The run state:"
-            -- print rs
+            putStrLn "A few replays:"
+            print $ take 6 replays
             let vl = V.fromList $ map opLower $ coParams config
                 vu = V.fromList $ map opUpper $ coParams config
             rrs <- newIORef rs
             -- Write an empty running file (when deleted: stop)
             writeFile runFile ""
             -- Start the (long) optimisation:
-            (r, vr) <- bayesOptim runGame rrs vl vu $ coIters config
+            (r, vr) <- bayesOptim runGame rrs vl vu (coIters config) (coNoise config)
             putStrLn $ "minimus is: " ++ show r
             putStrLn "for following parameters:"
             forM_ (zip (rsParams rs) (V.toList vr))
                 $ \(pn, val) -> putStrLn $ " - " ++ pn ++ " = " ++ show val
     where tab = "\t"
           qot = "\""
+
+-- We play small tournaments by default, to keep the run time shorter
+-- But this brings high noise in the results, so we take following approach:
+-- If the result is poor, we take it as it is
+-- but if it is good, we increase the number of games, to see if it was just noise
+-- or a really good point - the higher, the more games
+-- This is the function to calculate the fractions of points from which we need
+-- more and more replays
+nextReplay :: Double -> Double -> Double
+nextReplay frac lst = lst + frac * (1 - lst)
 
 -- This is the callback of the optimisation process, the function
 -- which will be called to acquire the target value for some parameter values
@@ -167,10 +181,25 @@ runGame rsref v = do
         "Start: " ++ show (rsCCC rs),
         "with args: " ++ show args
         ]
-    pts <- fromRational <$> oneMatch (rsCCC rs) args (rsChaEng rs)
     writeIORef rsref $ rs { rsLast = crtrun }
-    -- return difference to maximum, so that minimize will maximize the performance
-    return $! (rsMaxPts rs - pts) / rsMaxPts rs
+    prf <- plausibleRun (rsRepls rs) (rsMaxPts rs) (rsCCC rs) args (rsChaEng rs)
+    -- return difference to 1, so that minimize will maximize the performance
+    return $! 1 - prf
+
+plausibleRun :: [Double] -> Double -> FilePath -> [String] -> String -> IO Double
+plausibleRun replays maxpts ccc args me = go 0 0 replays
+    where go pts0 played (pr:prs) = do
+              putStrLn $ "Play new tournament for perf " ++ show pr
+              pts1 <- fromRational <$> oneMatch ccc args me
+              let pts = pts0 + pts1
+                  mxp = maxpts * (played + 1)
+                  prf = pts / mxp
+              if prf <= pr
+                 then return prf -- we played enough
+                 else do
+                     putStrLn $ "Perf is " ++ show prf
+                     go pts (played + 1) prs
+          go _ _ [] = fail "Infinite sequence is empty??"
 
 -- Make an engine config line for one param & value
 toEngConfLine :: (String, Double) -> String
@@ -222,6 +251,10 @@ data Tour = Tour {
                 toThreads :: Maybe Int
             }
 
+data Replay = Replay {
+                  reStart, reRest :: Double
+              }
+
 data OptParam = OptParam {
                     opParam :: Text,
                     opLower, opUpper :: Double
@@ -230,6 +263,8 @@ data OptParam = OptParam {
 data Config = Config {
                   coCCC     :: FilePath,  -- how to start cutechess-cli (full path)
                   coIters   :: Int,
+                  coNoise   :: Double,    -- it is actually noise to signal ratio (variances)
+                  coReplay  :: Replay,
                   coTour    :: Tour,
                   coChaEng  :: Engine,
                   coRefEngs :: [Engine],
@@ -284,10 +319,18 @@ instance FromJSON OptParam where
                               v .: "to"
     parseJSON x          = error $ "Not an optimisation parameter: " ++ show x
 
+instance FromJSON Replay where
+    parseJSON (Object v) = Replay <$>
+                              v .: "score"  <*>
+                              v .: "fraction"
+    parseJSON x          = error $ "Not a replay parameter: " ++ show x
+
 instance FromJSON Config where
     parseJSON (Object v) = Config <$>
                               v .: "cutechess"  <*>
                               v .: "iterations" <*>
+                              v .: "noise"      <*>
+                              v .: "replay"     <*>
                               v .: "tour"       <*>
                               v .: "engine"     <*>
                               v .: "engines"    <*>
