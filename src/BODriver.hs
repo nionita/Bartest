@@ -14,17 +14,11 @@ module Main (main) where
 -- - cutechess-cli configuration (times/depths, positions database, draw/adjudication conditions etc)
 -- - parameters to be optimised (name, range)
 
--- import           Control.Applicative ((<$>), (<*>))
--- import           Control.Concurrent
--- import           Control.Concurrent.Async
 import           Control.Exception
 import           Control.Monad
--- import qualified Data.ByteString.Char8 as B
 import           Data.Char (ord)
 import           Data.IORef
 import           Data.List (isPrefixOf)
--- import qualified Data.Map as M
--- import           Data.Maybe
 import           Data.Ratio
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -38,6 +32,7 @@ import           System.FilePath
 import           System.IO
 import           System.IO.Error
 import           System.Process
+-- import           System.Timeout
 -- import           System.Time (getClockTime)
 
 -- We have to use the first parameter from CLOP twofold:
@@ -47,7 +42,7 @@ import           System.Process
 main :: IO ()
 main = do
     (rootdir : _) <- getArgs
-    prepareGames rootdir
+    prepareGames $ normalise rootdir
 
 -- This data has to be passed to our callback, so it can do its work
 -- But we must change it during the callback, so we will pass a reference to it
@@ -62,6 +57,10 @@ data RunState = RunState {
                     rsMaxPts :: Double        -- max number of points
                 }
     deriving Show
+
+confFile, runFile :: FilePath
+confFile = "boconfig.cfg"
+runFile  = "running"
 
 -- This will prepare the begin of the match and return a run state
 -- which can be used to begin the optimisation
@@ -82,9 +81,9 @@ data RunState = RunState {
 prepareGames :: FilePath -> IO ()
 prepareGames rootdir = do
     setCurrentDirectory rootdir
-    cfe <- doesFileExist "boconfig.cfg"
-    when (not cfe) $ fail "Config file boconfig.cfg does not exist in the given directory"
-    mconf <- decodeFileEither "boconfig.cfg"
+    cfe <- doesFileExist confFile
+    when (not cfe) $ fail $ "Config file " ++ confFile ++ " does not exist in the given directory"
+    mconf <- decodeFileEither confFile
     case mconf of
         Left ye      -> fail $ "Existing config file does not parse: " ++ show ye
         Right config -> do
@@ -106,7 +105,8 @@ prepareGames rootdir = do
                                 ++ qot ++ engBin e ++ qot ++ ","
                 hPutStrLn eco $ tab ++ tab ++ qot ++ "workingDirectory" ++ qot ++ " : "
                                 -- </> makes problems in Windows:
-                                ++ qot ++ rootdir ++ "/" ++ edir ++ qot ++ ","
+                                ++ show (normalise (rootdir </> edir)) ++ ","
+                putStrLn $ show (normalise (rootdir </> edir))
                 hPutStrLn eco $ tab ++ tab ++ qot ++ "protocol" ++ qot ++ " : "
                                 ++ qot ++ T.unpack (engProto e) ++ qot
                 hPutStrLn eco $ tab ++ "}"
@@ -129,7 +129,10 @@ prepareGames rootdir = do
             let vl = V.fromList $ map opLower $ coParams config
                 vu = V.fromList $ map opUpper $ coParams config
             rrs <- newIORef rs
-            (r, vr) <- bayesOptim runGame rrs vl vu
+            -- Write an empty running file (when deleted: stop)
+            writeFile runFile ""
+            -- Start the (long) optimisation:
+            (r, vr) <- bayesOptim runGame rrs vl vu $ coIters config
             putStrLn $ "minimus is: " ++ show r
             putStrLn "for following parameters:"
             forM_ (zip (rsParams rs) (V.toList vr))
@@ -151,9 +154,9 @@ runGame rsref v = do
     rs  <- readIORef rsref
     let crtrun  = rsLast rs + 1
         runname = rsEvent rs ++ "-run-" ++ show crtrun
-        logfile = rsRoot rs </> "logdir" </> (runname ++ ".log")
-        pgnout  = rsRoot rs </> "pgnout" </> (runname ++ ".pgn")
-        engcfg  = rsRoot rs </> ("cwd-" ++ rsChaEng rs) </> (runname ++ ".cfg")
+        logfile = normalise (rsRoot rs </> "logdir" </> (runname ++ ".log"))
+        pgnout  = normalise (rsRoot rs </> "pgnout" </> (runname ++ ".pgn"))
+        engcfg  = normalise (rsRoot rs </> ("cwd-" ++ rsChaEng rs) </> (runname ++ ".cfg"))
     -- write a new log file:
     --     ++ (calendarTimeToString $ toCalendarTime tod) ++ "\n"
     -- write engine config file:
@@ -226,6 +229,7 @@ data OptParam = OptParam {
 
 data Config = Config {
                   coCCC     :: FilePath,  -- how to start cutechess-cli (full path)
+                  coIters   :: Int,
                   coTour    :: Tour,
                   coChaEng  :: Engine,
                   coRefEngs :: [Engine],
@@ -282,10 +286,11 @@ instance FromJSON OptParam where
 
 instance FromJSON Config where
     parseJSON (Object v) = Config <$>
-                              v .: "cutechess" <*>
-                              v .: "tour"      <*>
-                              v .: "engine"    <*>
-                              v .: "engines"   <*>
+                              v .: "cutechess"  <*>
+                              v .: "iterations" <*>
+                              v .: "tour"       <*>
+                              v .: "engine"     <*>
+                              v .: "engines"    <*>
                               v .: "params"
     parseJSON x          = error $ "Error in config: " ++ show x
 
@@ -331,26 +336,51 @@ timeControl (TimeControl { .. })
                             Nothing -> tot
                             Just pm -> tot ++ "+" ++ show pm
 
+-- Run one tournament with cutechess-cli
 oneMatch :: FilePath -> [String] -> String -> IO Rational
 oneMatch cccBin args me = do
     (_, Just hout, _, ph)
-            <- createProcess (proc cccBin args) { std_out = CreatePipe }
+        <- createProcess (proc cccBin args) { std_out = CreatePipe }
+    hSetBuffering hout LineBuffering
     catch (everyLine me hout 0) $ \e -> do
         let es = ioeGetErrorString e
-        putStrLn $ "Error in everyLine: " ++ es
-        terminateProcess ph
-        throwIO e
+        if es == runFile
+           then do
+               -- Used deleted the running file: terminate with normal message
+               terminateProcess ph
+               ioError $ userError $ "Running file not present, stop"
+           else do
+               putStrLn $ "Error in everyLine: " ++ es
+               terminateProcess ph
+               -- We will have to repeat the experiment:
+               oneMatch cccBin args me
 
+-- waitMicroSec :: Int
+-- waitMicroSec = 60 * 1000 * 1000  -- 60 seconds
+
+-- Read the lines from the cutechess-cli pipe
 everyLine :: String -> Handle -> Rational -> IO Rational
 everyLine me h = go
     where go !r = do
-              lin <- hGetLine h
-              putStrLn $ "Got: " ++ lin
-              if "Rank Name " `isPrefixOf` lin
-                 then return r
-                 else if "Finished game " `isPrefixOf` lin
-                         then go (r + getScore lin me)
-                         else go r
+                     {--
+              cfe <- doesFileExist runFile
+              if not cfe
+                 then ioError $ userError runFile
+                 else do
+                     mlin <- timeout waitMicroSec $ hGetLine h
+                     case mlin of
+                         Nothing -> do
+                             putStrLn "Timeout in everyLine"
+                             go r
+                         Just lin -> do
+                     --}
+                             lin <- hGetLine h
+                             putStrLn $ "Got: " ++ lin
+                             if "Rank Name " `isPrefixOf` lin
+                                then return r
+                                else if "Finished game " `isPrefixOf` lin
+                                        then go (r + getScore lin me)
+                                        else go r
 
 -- The line has the following structure:
 -- Finished game xxx (aaa vs bbb): rez ...

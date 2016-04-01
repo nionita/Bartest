@@ -21,9 +21,11 @@ type Callback a = a -> V.Vector Double -> IO Double
 -- C callback:
 type CCB a = CUInt -> Ptr CDouble -> Ptr CDouble -> Ptr a -> IO CDouble
 
+{--
 -- | Possible parameters for optimisation algorithm
 data Params = Kernel | Mean | Criteria | Surrogate | LogFile | LoadFile | SaveFile
             | Learning | Score
+--}
 
 -- inline-c contexts needed for function pointers & vectors
 C.context (C.baseCtx <> C.vecCtx <> C.funCtx)
@@ -35,10 +37,12 @@ bayesOptim
     -> a
     -> V.Vector Double
     -> V.Vector Double
+    -> Int
     -> IO (Double, V.Vector Double)
-bayesOptim f a lv uv = do
+bayesOptim f a lv uv ite = do
     let dim   = V.length lv
         dim_c = fromIntegral dim
+        ite_c = fromIntegral ite
         clv   = coerce lv :: V.Vector CDouble
         cuv   = coerce uv :: V.Vector CDouble
     -- This is the C callback function, where we make some parameter
@@ -59,11 +63,15 @@ bayesOptim f a lv uv = do
             bopt_params bp;
             bp = initialize_parameters_to_default();
             // Ad-hoc parameter settings - will have to expose some functions for this
-            bp.n_iterations   = 25;
+            bp.n_iterations   = $(int ite_c);
             bp.noise          = 0.5;
             bp.n_iter_relearn = 5;
             bp.n_init_samples = 5;
+            bp.verbose_level = 2;
+            set_load_file(&bp, "boload.dat");
+            set_save_file(&bp, "bosave.dat");
             set_learning(&bp, "L_MCMC");
+            bp.load_save_flag = 3;	// load & append
             double *r = $vec-ptr:(double *vrx);
             bayes_optimization(
                 $(int dim_c),

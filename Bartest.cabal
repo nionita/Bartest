@@ -36,7 +36,7 @@ executable BODriver
   hs-source-dirs:      src
   c-sources:           src/BayesOpt.c
   ghc-options:         -O2 -Wall
-  cc-options:         -Wall
+  cc-options:          -Wall
   include-dirs:        J:/BOInst/include
   extra-lib-dirs:      J:/BOInst/lib
   extra-libraries:     bayesopt, nlopt, stdc++
