@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -16,14 +17,17 @@ module Main (main) where
 
 import           Control.Exception
 import           Control.Monad
+import qualified Data.ByteString.Lazy as BL
 import           Data.Char (ord)
 import           Data.IORef
 import           Data.List (isPrefixOf)
 import           Data.Ratio
+import           Data.Serialize (Serialize, encodeLazy, decodeLazy)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector.Storable as V
 import           Data.Yaml
+import           GHC.Generics
 -- import           Optimisation.Stochastic.BayesOpt
 import           BayesOpt
 import           System.Directory
@@ -55,13 +59,27 @@ data RunState = RunState {
                     rsLast   :: Int,          -- last run number
                     rsChaEng :: String,       -- the learning engine name
                     rsMaxPts :: Double,       -- max number of points
-                    rsRepls  :: [Double]      -- to use for replays
+                    rsRepls  :: [Double],     -- to use for replays
+                    rsVTPla  :: Int,          -- number of simple tournaments played
+                    rsVSX    :: Double,       -- sum of simple results
+                    rsVSX2   :: Double        -- sum of quadrats of simple results
                 }
     deriving Show
 
-confFile, runFile :: FilePath
+-- Parts of RunState which are saved & restored in case of interrupts
+data Save = Save {
+                saLast  :: Int,     -- last run number
+                saVTPla :: Int,     -- number of simple tournaments played
+                saVSX   :: Double,  -- sum of simple results
+                saVSX2  :: Double   -- sum of quadrats of simple results
+            } deriving Generic
+
+instance Serialize Save
+
+confFile, runFile, saveFile :: FilePath
 confFile = "boconfig.cfg"
 runFile  = "running"
+saveFile = "rssave.dat"
 
 -- This will prepare the begin of the match and return a run state
 -- which can be used to begin the optimisation
@@ -116,7 +134,7 @@ prepareGames rootdir = do
             hClose eco
             let rep = coReplay config
                 replays = reStart rep : map (nextReplay (reRest rep)) replays
-                rs = RunState {
+                rs' = RunState {
                          rsCCC    = coCCC config,
                          rsEvent  = T.unpack (toEvent $ coTour config),
                          rsRoot   = rootdir,
@@ -126,10 +144,14 @@ prepareGames rootdir = do
                          rsChaEng = head engines,
                          rsMaxPts = fromIntegral $ toRounds (coTour config) * 2
                                         * (length engines - 1),
-                         rsRepls  = replays
+                         rsRepls  = replays,
+                         rsVTPla  = 0,
+                         rsVSX    = 0,
+                         rsVSX2   = 0
                      }
-            putStrLn "A few replays:"
-            print $ take 6 replays
+            -- putStrLn "A few replays:"
+            -- print $ take 6 replays
+            rs <- loadStatus rs'
             let vl = V.fromList $ map opLower $ coParams config
                 vu = V.fromList $ map opUpper $ coParams config
             rrs <- newIORef rs
@@ -165,7 +187,7 @@ nextReplay frac lst = lst + frac * (1 - lst)
 runGame :: Callback (IORef RunState)
 runGame rsref v = do
     -- tod <- getClockTime
-    rs  <- readIORef rsref
+    rs <- readIORef rsref
     let crtrun  = rsLast rs + 1
         runname = rsEvent rs ++ "-run-" ++ show crtrun
         logfile = normalise (rsRoot rs </> "logdir" </> (runname ++ ".log"))
@@ -181,25 +203,63 @@ runGame rsref v = do
         "Start: " ++ show (rsCCC rs),
         "with args: " ++ show args
         ]
-    writeIORef rsref $ rs { rsLast = crtrun }
-    prf <- plausibleRun (rsRepls rs) (rsMaxPts rs) (rsCCC rs) args (rsChaEng rs)
+    (prr, srs) <- plausibleRun (rsRepls rs) (rsMaxPts rs) (rsCCC rs) args (rsChaEng rs)
+    let rs' = rs { rsLast  = crtrun,
+                   rsVTPla = rsVTPla rs + length srs,
+                   rsVSX   = rsVSX   rs + sum srs,
+                   rsVSX2  = rsVSX2  rs + sum (map sqr srs)
+                 }
+        n   = fromIntegral $ rsVTPla rs'
+        msr = rsVSX rs' / n
+        var = rsVSX2 rs' / n - sqr msr
+    putStrLn "Results statistics:"
+    putStrLn $ "Number of tournaments played: " ++ show (rsVTPla rs')
+    putStrLn $ "Mean of simple results:       " ++ show msr
+    putStrLn $ "Signal + Noise variance:      " ++ show var
+    writeIORef rsref rs'
+    saveStatus rs'
     -- return difference to 1, so that minimize will maximize the performance
-    return $! 1 - prf
+    return $! 1 - prr
+    where sqr x = x * x
 
-plausibleRun :: [Double] -> Double -> FilePath -> [String] -> String -> IO Double
-plausibleRun replays maxpts ccc args me = go 0 0 replays
-    where go pts0 played (pr:prs) = do
+plausibleRun :: [Double] -> Double -> FilePath -> [String] -> String -> IO (Double, [Double])
+plausibleRun replays maxpts ccc args me = go 0 0 replays []
+    where go pts0 played (pr:prs) srs = do
               putStrLn $ "Play new tournament for perf " ++ show pr
               pts1 <- fromRational <$> oneMatch ccc args me
-              let pts = pts0 + pts1
-                  mxp = maxpts * (played + 1)
-                  prf = pts / mxp
+              let pts  = pts0 + pts1
+                  sr   = pts1 / maxpts  -- simple result of last match
+                  srs' = sr : srs
+                  mxp  = maxpts * (played + 1)
+                  prf  = pts / mxp
               if prf <= pr
-                 then return prf -- we played enough
+                 then return (prf, srs') -- we played enough
                  else do
                      putStrLn $ "Perf is " ++ show prf
-                     go pts (played + 1) prs
-          go _ _ [] = fail "Infinite sequence is empty??"
+                     go pts (played + 1) prs srs'
+          go _ _ [] _ = fail "Infinite sequence is empty??"
+
+-- Save the status to file
+saveStatus :: RunState -> IO ()
+saveStatus rs = do
+    let ss = Save { saLast = rsLast rs, saVTPla = rsVTPla rs,
+                    saVSX  = rsVSX  rs, saVSX2  = rsVSX2  rs }
+        sf = addExtension saveFile "new"
+    BL.writeFile sf $ encodeLazy ss
+    renameFile sf saveFile
+
+-- Load the status from file, modify the given run state
+loadStatus :: RunState -> IO RunState
+loadStatus rs = do
+    sfe <- doesFileExist saveFile
+    if not sfe
+       then return rs
+       else do
+           bs <- BL.readFile saveFile
+           case decodeLazy bs of
+               Left estr -> fail $ "Decode save file: " ++ estr
+               Right sa  -> return rs { rsLast = saLast sa, rsVTPla = saVTPla sa,
+                                        rsVSX  = saVSX  sa, rsVSX2  = saVSX2  sa }
 
 -- Make an engine config line for one param & value
 toEngConfLine :: (String, Double) -> String
@@ -372,9 +432,9 @@ timeControl (TimeControl { .. })
           Nothing -> case tcPerMv of
                          Nothing -> error "Wrong time control, no times"
                          Just ps -> "0+" ++ show ps
-          Just to -> let tot = case tcMoves of
-                                   Nothing -> show to
-                                   Just ms -> show to ++ "/" ++ show ms
+          Just tc -> let tot = case tcMoves of
+                                   Nothing -> show tc
+                                   Just ms -> show tc ++ "/" ++ show ms
                      in case tcPerMv of
                             Nothing -> tot
                             Just pm -> tot ++ "+" ++ show pm
@@ -405,11 +465,11 @@ oneMatch cccBin args me = do
 everyLine :: String -> Handle -> Rational -> IO Rational
 everyLine me h = go
     where go !r = do
-                     {--
               cfe <- doesFileExist runFile
               if not cfe
                  then ioError $ userError runFile
                  else do
+                     {--
                      mlin <- timeout waitMicroSec $ hGetLine h
                      case mlin of
                          Nothing -> do
