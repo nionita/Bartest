@@ -32,6 +32,7 @@ import           GHC.Generics
 import           BayesOpt
 import           System.Directory
 import           System.Environment (getArgs)
+import           System.Exit
 import           System.FilePath
 import           System.IO
 import           System.IO.Error
@@ -62,7 +63,8 @@ data RunState = RunState {
                     rsRepls  :: [Double],     -- to use for replays
                     rsVTPla  :: Int,          -- number of simple tournaments played
                     rsVSX    :: Double,       -- sum of simple results
-                    rsVSX2   :: Double        -- sum of quadrats of simple results
+                    rsVSX2   :: Double,       -- sum of squares of simple results
+                    rsVN2    :: Double        -- sum of squares for noise variance
                 }
     deriving Show
 
@@ -71,15 +73,18 @@ data Save = Save {
                 saLast  :: Int,     -- last run number
                 saVTPla :: Int,     -- number of simple tournaments played
                 saVSX   :: Double,  -- sum of simple results
-                saVSX2  :: Double   -- sum of quadrats of simple results
+                saVSX2  :: Double,  -- sum of squares of simple results
+                saVN2   :: Double   -- sum of squares of noise minus mean
             } deriving Generic
 
 instance Serialize Save
 
-confFile, runFile, saveFile :: FilePath
+confFile, runFile, saveFile, bosave, boload :: FilePath
 confFile = "boconfig.cfg"
 runFile  = "running"
 saveFile = "rssave.dat"
+bosave   = "bosave.dat"
+boload   = "boload.dat"
 
 -- This will prepare the begin of the match and return a run state
 -- which can be used to begin the optimisation
@@ -147,11 +152,24 @@ prepareGames rootdir = do
                          rsRepls  = replays,
                          rsVTPla  = 0,
                          rsVSX    = 0,
-                         rsVSX2   = 0
+                         rsVSX2   = 0,
+                         rsVN2    = 0
                      }
             -- putStrLn "A few replays:"
             -- print $ take 6 replays
             rs <- loadStatus rs'
+            -- When we restarted, if htere is a bosave.dat file, we copy it to
+            -- boload.dat, not before renaming an older boload.dat to some numbered one
+            -- Because this means, bayeselo will have to restore to the last saved state,
+            -- as we also do
+            sfe <- doesFileExist bosave
+            when sfe $ do
+                lfe <- doesFileExist boload
+                when lfe $ do
+                    let oldboload = addExtension boload $ show $ rsLast rs
+                    renameFile boload oldboload
+                copyFile bosave boload
+                putStrLn $ "Copied " ++ bosave ++ " to " ++ boload
             let vl = V.fromList $ map opLower $ coParams config
                 vu = V.fromList $ map opUpper $ coParams config
             rrs <- newIORef rs
@@ -186,40 +204,56 @@ nextReplay frac lst = lst + frac * (1 - lst)
 -- Other command line options can be given in the global config file (for all engines)
 runGame :: Callback (IORef RunState)
 runGame rsref v = do
-    -- tod <- getClockTime
-    rs <- readIORef rsref
-    let crtrun  = rsLast rs + 1
-        runname = rsEvent rs ++ "-run-" ++ show crtrun
-        logfile = normalise (rsRoot rs </> "logdir" </> (runname ++ ".log"))
-        pgnout  = normalise (rsRoot rs </> "pgnout" </> (runname ++ ".pgn"))
-        engcfg  = normalise (rsRoot rs </> ("cwd-" ++ rsChaEng rs) </> (runname ++ ".cfg"))
-    -- write a new log file:
-    --     ++ (calendarTimeToString $ toCalendarTime tod) ++ "\n"
-    -- write engine config file:
-    writeFile engcfg $ unlines $ map toEngConfLine $ zip (rsParams rs) $ V.toList v
-    let args = addCutechessPgnOut (rsChaEng rs) engcfg pgnout (rsArgs rs)
-    writeFile logfile $ unlines [
-        "New run " ++ runname ++ " started",
-        "Start: " ++ show (rsCCC rs),
-        "with args: " ++ show args
-        ]
-    (prr, srs) <- plausibleRun (rsRepls rs) (rsMaxPts rs) (rsCCC rs) args (rsChaEng rs)
-    let rs' = rs { rsLast  = crtrun,
-                   rsVTPla = rsVTPla rs + length srs,
-                   rsVSX   = rsVSX   rs + sum srs,
-                   rsVSX2  = rsVSX2  rs + sum (map sqr srs)
-                 }
-        n   = fromIntegral $ rsVTPla rs'
-        msr = rsVSX rs' / n
-        var = rsVSX2 rs' / n - sqr msr
-    putStrLn "Results statistics:"
-    putStrLn $ "Number of tournaments played: " ++ show (rsVTPla rs')
-    putStrLn $ "Mean of simple results:       " ++ show msr
-    putStrLn $ "Signal + Noise variance:      " ++ show var
-    writeIORef rsref rs'
-    saveStatus rs'
-    -- return difference to 1, so that minimize will maximize the performance
-    return $! 1 - prr
+    -- If the running file does not exist, exit (bayeselo has already saved its state)
+    cfe <- doesFileExist runFile
+    if not cfe
+       then do
+           putStrLn "Smooth exit by run file deletion"
+           exitSuccess
+       else do
+           rs <- readIORef rsref
+           let crtrun  = rsLast rs + 1
+               runname = rsEvent rs ++ "-run-" ++ show crtrun
+               logfile = normalise (rsRoot rs </> "logdir" </> (runname ++ ".log"))
+               pgnout  = normalise (rsRoot rs </> "pgnout" </> (runname ++ ".pgn"))
+               engcfg  = normalise (rsRoot rs </> ("cwd-" ++ rsChaEng rs) </> (runname ++ ".cfg"))
+           -- write a new log file:
+           --     ++ (calendarTimeToString $ toCalendarTime tod) ++ "\n"
+           -- write engine config file:
+           writeFile engcfg $ unlines $ map toEngConfLine $ zip (rsParams rs) $ V.toList v
+           let args = addCutechessPgnOut (rsChaEng rs) engcfg pgnout (rsArgs rs)
+           writeFile logfile $ unlines [
+               "New run " ++ runname ++ " started",
+               "Start: " ++ show (rsCCC rs),
+               "with args: " ++ show args
+               ]
+           (prr, srs) <- plausibleRun (rsRepls rs) (rsMaxPts rs) (rsCCC rs) args (rsChaEng rs)
+           let rs' = rs { rsLast  = crtrun,
+                          rsVTPla = rsVTPla rs + lsrs,
+                          rsVSX   = rsVSX   rs + ssrs,
+                          rsVSX2  = rsVSX2  rs + sum (map sqr srs),
+                          rsVN2   = ts
+                        }
+               lsrs  = length srs
+               ssrs  = sum srs
+               msrs  = ssrs / fromIntegral lsrs
+               ts    = rsVN2 rs + sum (map (sqr . subtract msrs) srs)
+               nvar  = ts / n
+               n     = fromIntegral $ rsVTPla rs'
+               msr   = rsVSX  rs' / n
+               snvar = rsVSX2 rs' / n - sqr msr
+               svar  = snvar - nvar
+           putStrLn "Results statistics:"
+           putStrLn $ "Number of tournaments played:   " ++ show (rsVTPla rs')
+           putStrLn $ "Mean of all simple results:     " ++ show msr
+           putStrLn $ "Noise variance:                 " ++ show nvar
+           putStrLn $ "Signal + Noise variance:        " ++ show snvar
+           putStrLn $ "Resulting Signal variance:      " ++ show svar
+           putStrLn $ "Noise to signal variance ratio: " ++ show (snvar / svar)
+           writeIORef rsref rs'
+           saveStatus rs'
+           -- return difference to 1, so that minimize will maximize the performance
+           return $! 1 - prr
     where sqr x = x * x
 
 plausibleRun :: [Double] -> Double -> FilePath -> [String] -> String -> IO (Double, [Double])
@@ -232,18 +266,18 @@ plausibleRun replays maxpts ccc args me = go 0 0 replays []
                   srs' = sr : srs
                   mxp  = maxpts * (played + 1)
                   prf  = pts / mxp
+              putStrLn $ "Last  perf is " ++ show sr
+              putStrLn $ "Total perf is " ++ show prf
               if prf <= pr
                  then return (prf, srs') -- we played enough
-                 else do
-                     putStrLn $ "Perf is " ++ show prf
-                     go pts (played + 1) prs srs'
+                 else go pts (played + 1) prs srs'
           go _ _ [] _ = fail "Infinite sequence is empty??"
 
 -- Save the status to file
 saveStatus :: RunState -> IO ()
 saveStatus rs = do
     let ss = Save { saLast = rsLast rs, saVTPla = rsVTPla rs,
-                    saVSX  = rsVSX  rs, saVSX2  = rsVSX2  rs }
+                    saVSX  = rsVSX  rs, saVSX2  = rsVSX2  rs, saVN2 = rsVN2 rs }
         sf = addExtension saveFile "new"
     BL.writeFile sf $ encodeLazy ss
     renameFile sf saveFile
@@ -259,7 +293,8 @@ loadStatus rs = do
            case decodeLazy bs of
                Left estr -> fail $ "Decode save file: " ++ estr
                Right sa  -> return rs { rsLast = saLast sa, rsVTPla = saVTPla sa,
-                                        rsVSX  = saVSX  sa, rsVSX2  = saVSX2  sa }
+                                        rsVSX  = saVSX  sa, rsVSX2  = saVSX2  sa,
+                                        rsVN2  = saVN2  sa }
 
 -- Make an engine config line for one param & value
 toEngConfLine :: (String, Double) -> String
@@ -445,7 +480,7 @@ oneMatch cccBin args me = do
     (_, Just hout, _, ph)
         <- createProcess (proc cccBin args) { std_out = CreatePipe }
     hSetBuffering hout LineBuffering
-    catch (everyLine me hout 0) $ \e -> do
+    r <- catch (everyLine me hout 0) $ \e -> do
         let es = ioeGetErrorString e
         if es == runFile
            then do
@@ -455,35 +490,44 @@ oneMatch cccBin args me = do
            else do
                putStrLn $ "Error in everyLine: " ++ es
                terminateProcess ph
+               _ <- waitForProcess ph
                -- We will have to repeat the experiment:
                oneMatch cccBin args me
+    _ <- waitForProcess ph
+    return r
 
 -- waitMicroSec :: Int
 -- waitMicroSec = 60 * 1000 * 1000  -- 60 seconds
 
 -- Read the lines from the cutechess-cli pipe
 everyLine :: String -> Handle -> Rational -> IO Rational
-everyLine me h = go
-    where go !r = do
-              cfe <- doesFileExist runFile
-              if not cfe
-                 then ioError $ userError runFile
-                 else do
-                     {--
-                     mlin <- timeout waitMicroSec $ hGetLine h
-                     case mlin of
-                         Nothing -> do
-                             putStrLn "Timeout in everyLine"
-                             go r
-                         Just lin -> do
-                     --}
-                             lin <- hGetLine h
-                             putStrLn $ "Got: " ++ lin
-                             if "Rank Name " `isPrefixOf` lin
-                                then return r
-                                else if "Finished game " `isPrefixOf` lin
-                                        then go (r + getScore lin me)
-                                        else go r
+everyLine me h = go True
+    where go wrmes !r = do
+              -- We want to write this message only once, not on every line...
+              wr <- if wrmes
+                       then do
+                           cfe <- doesFileExist runFile
+                           if cfe
+                              then return True
+                              else do
+                                  putStrLn "Runfile not present, will exit on next callback"
+                                  return False
+                       else return False
+              {--
+              mlin <- timeout waitMicroSec $ hGetLine h
+              case mlin of
+                  Nothing -> do
+                      putStrLn "Timeout in everyLine"
+                      go r
+                  Just lin -> do
+              --}
+              lin <- hGetLine h
+              putStrLn $ "Got: " ++ lin
+              if "Rank Name " `isPrefixOf` lin
+                 then return r
+                 else if "Finished game " `isPrefixOf` lin
+                         then go wr (r + getScore lin me)
+                         else go wr r
 
 -- The line has the following structure:
 -- Finished game xxx (aaa vs bbb): rez ...

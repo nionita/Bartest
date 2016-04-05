@@ -67,9 +67,9 @@ bayesOptim f a lv uv ite noi = do
             // Ad-hoc parameter settings - will have to expose some functions for this
             bp.n_iterations   = $(int ite_c);
             bp.noise          = $(double noi_c);
-            bp.n_iter_relearn = 2;
+            bp.n_iter_relearn = 1;
             bp.n_init_samples = 5;
-            bp.verbose_level = 2;
+            bp.verbose_level  = 2;
             set_load_file(&bp, "boload.dat");
             set_save_file(&bp, "bosave.dat");
             set_learning(&bp, "L_MCMC");
