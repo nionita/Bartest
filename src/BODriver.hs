@@ -445,7 +445,7 @@ oneMatch cccBin args me = do
     (_, Just hout, _, ph)
         <- createProcess (proc cccBin args) { std_out = CreatePipe }
     hSetBuffering hout LineBuffering
-    catch (everyLine me hout 0) $ \e -> do
+    r <- catch (everyLine me hout 0) $ \e -> do
         let es = ioeGetErrorString e
         if es == runFile
            then do
@@ -455,8 +455,11 @@ oneMatch cccBin args me = do
            else do
                putStrLn $ "Error in everyLine: " ++ es
                terminateProcess ph
+               waitForProcess ph
                -- We will have to repeat the experiment:
                oneMatch cccBin args me
+    waitForProcess ph
+    return r
 
 -- waitMicroSec :: Int
 -- waitMicroSec = 60 * 1000 * 1000  -- 60 seconds
