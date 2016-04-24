@@ -155,6 +155,7 @@ prepareGames rootdir = do
                          rsVSX2   = 0,
                          rsVN2    = 0
                      }
+            hSetBuffering stdout LineBuffering
             -- putStrLn "A few replays:"
             -- print $ take 6 replays
             rs <- loadStatus rs'
