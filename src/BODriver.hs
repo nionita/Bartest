@@ -250,7 +250,7 @@ runGame rsref v = do
            putStrLn $ "Noise variance:                 " ++ show nvar
            putStrLn $ "Signal + Noise variance:        " ++ show snvar
            putStrLn $ "Resulting Signal variance:      " ++ show svar
-           putStrLn $ "Noise to signal variance ratio: " ++ show (snvar / svar)
+           putStrLn $ "Noise to signal variance ratio: " ++ show (nvar / svar)
            writeIORef rsref rs'
            saveStatus rs'
            -- return difference to 1, so that minimize will maximize the performance
@@ -490,8 +490,14 @@ oneMatch cccBin args me = do
                ioError $ userError $ "Running file not present, stop"
            else do
                putStrLn $ "Error in everyLine: " ++ es
-               terminateProcess ph
-               _ <- waitForProcess ph
+               catch (do
+                   terminateProcess ph
+                   _ <- waitForProcess ph
+                   return ()
+                   ) $ \et -> do
+                          let est = ioeGetErrorString et
+                          putStrLn $ "Ignored error in terminateProces: " ++ est
+                          return ()
                -- We will have to repeat the experiment:
                oneMatch cccBin args me
     _ <- waitForProcess ph
