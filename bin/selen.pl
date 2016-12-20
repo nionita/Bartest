@@ -1,6 +1,9 @@
 #!/usr/bin/env perl
 
 # Select engines based on a rating file (.rating.txt)
+# First parameter: number of engines (mandatory)
+# Optional: -v - verbose
+# Optional: engines to be selected before any others
 # Rules:
 # - black listed engines (.inactive.txt) are ignored
 # - at least one rated engine will be selected
@@ -14,8 +17,12 @@ use strict;
 use warnings;
 
 my $nengs = $ARGV[0];	# parameter: number of engines
+shift @ARGV;
 my $verbose = 0;
-$verbose = 1 if defined $ARGV[1] && $ARGV[1] eq "-v";
+if (defined $ARGV[0] && $ARGV[0] eq "-v") {
+	$verbose = 1;
+	shift @ARGV;
+}
 
 my $base  = $ENV{HOME};
 my $rfile = "$base/Tour/.rating.txt";
@@ -24,14 +31,20 @@ my $edir  = "$base/Engines";
 
 my %ratings;
 my %inactive;
+my %mandatory;
 my $lastelo;
 my $suplow;
 
-# Engines listed in inactive will be ignored
+# Mandatory engines listed on comman line:
+for my $eng (@ARGV) {
+	$mandatory{$eng} = 0;
+}
+
+# Engines listed in inactive will be ignored if not mandatory:
 if (open INACT, $ifile) {
 	while (my $line = <INACT>) {
 		chomp $line;
-		$inactive{$line}++;	# one engine per line
+		$inactive{$line}++ if !exists $mandatory{$line};	# one engine per line
 	}
 	close INACT;
 }
@@ -56,7 +69,7 @@ die "No engines found in the rating file!\n" if !defined $lastelo;
 # Collect the known engines (binaries):
 chdir $edir || die "Can't chdir to $edir: $!\n";
 
-my (@good, @bad, @unrated);
+my (@mandatory, @good, @bad, @unrated);
 my @files = glob "Barbarossa-*";
 my $lowest;
 my $ina = 0;
@@ -72,7 +85,11 @@ for my $eng (@files) {
 		print "- inactive\n" if $verbose;
 		next;
 	}
-	if (exists $ratings{$short}) {
+	if (exists $mandatory{$short}) {
+		push @mandatory, $short;
+		$mandatory{$short}++;
+		print "- mandatory\n" if $verbose;
+	} elsif (exists $ratings{$short}) {
 		my ($elo, $delta) = @{$ratings{$short}};
 		$lowest = $elo if (!defined $lowest || $elo < $lowest);
 		my $eupper = $elo + $delta;
@@ -89,10 +106,17 @@ for my $eng (@files) {
 	}
 }
 
-print("We have " . scalar(@unrated) . " unrated, "
-	. scalar(@good) . " good, " . scalar(@bad) . " bad and "
-	. $ina . " inactive engines\n")
-	if $verbose;
+if ($verbose) {
+	for my $eng (keys(%mandatory)) {
+		print "$eng: not found mandatory engine!\n" if !$mandatory{$eng};
+	}
+	print("We have "
+		. scalar(@mandatory) . " mandatory, "
+		. scalar(@unrated) . " unrated, "
+		. scalar(@good) . " good, "
+		. scalar(@bad) . " bad and "
+		. $ina . " inactive engines\n");
+}
 
 my $elocorr = 1 - $lowest;	# 1 is for the lowest existing, not ignored, rated engine
 
@@ -100,7 +124,6 @@ my $elocorr = 1 - $lowest;	# 1 is for the lowest existing, not ignored, rated en
 # elo * delta, which will give the base for the probability
 # to participate in the next tournament
 print "Normalize elo, probability factors:\n" if $verbose;
-#for my $eng (keys %ratings) {
 for my $eng (@good, @bad) {
 	my ($elo, $delta) = @{$ratings{$eng}};
 	my $celo = $elo + $elocorr;
@@ -110,16 +133,35 @@ for my $eng (@good, @bad) {
 }
 
 # Now we choose the engines to run next tournament
-# We always take at least one rated engine in the list, to have
+# If we have mandatory engines, we take them as long es the number allows
+# Then, we always take at least one rated engine in the list, to have
 # a good connected rated list next time,
 # then fill as many unrated engines as possible (at random),
 # then and further rated "good" engines based on probabilities,
 # and then (if needed) rated "bad" engines based on probabilities
 my $toselect = $nengs;
 
+# Mandatory:
+my $cmandatory = scalar @mandatory;
+$cmandatory = $toselect if $cmandatory > $toselect;
+$toselect = $toselect - $cmandatory;
+
+print "Choose $cmandatory mandatory\n" if $verbose;
+my %choosen;
+my $i = 0;
+# Are we already connected after mandatory?
+my $connected = 0;
+while ($i < $cmandatory) {
+	my $eng = $mandatory[$i];
+	$choosen{$eng} = 1;
+	$connected++ if exists $ratings{$eng};
+	$i++;
+}
+
 # Unrated:
 my $cunrated = scalar @unrated;
-$cunrated = $toselect - 1 if $cunrated >= $toselect;
+$cunrated = $toselect if $cunrated > $toselect;
+$cunrated-- if $cunrated > 0 && $cmandatory > 0 && !$connected;
 $toselect = $toselect - $cunrated;
 
 # Good:
@@ -134,8 +176,6 @@ $toselect = $toselect - $cbad;
 
 print "Not enough engines to select, wanted: $nengs, missing: $toselect\n" if $toselect > 0;
 
-my $i = 0;
-my %choosen;
 if ($cunrated > 0) {
 	print "Choose $cunrated unrated\n" if $verbose;
 	if ($cunrated < scalar @unrated) {

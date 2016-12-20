@@ -1,4 +1,4 @@
-#/bin/bash
+#/usr/bin/env bash
  
 error() {
         what=$1
@@ -20,7 +20,7 @@ echo "*** Version is $ver ***"
 
 stack clean
  
-stack build || error "build"
+stack build -j2 || error "build"
 
 key="local-install-root"
 

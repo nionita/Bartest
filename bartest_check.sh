@@ -46,12 +46,12 @@ function compare {
 	for f in $flst
 	do
 		diff $dir/$f ../$dir > diff-$f
-		ls -l diff-$f
 		if [ -s diff-$f ]
 		then
-			rm diff-$f
-		else
 			echo Difference in $f
+			ls -l diff-$f
+		else
+			rm diff-$f
 		fi
 	done
 }
