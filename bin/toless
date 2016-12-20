@@ -1,0 +1,15 @@
+#!/bin/bash
+
+#set -x
+
+tour=~/Tour/running
+
+for d in $tour/TEST-*
+do
+	if [ -d $d ]
+	then
+		tail -f $d/TEST-*.log
+		exit 0
+	fi
+done
+echo No tour running

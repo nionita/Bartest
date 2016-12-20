@@ -1,8 +1,8 @@
 {-# LANGUAGE RankNTypes #-}
 module Main where
 
-import Control.Applicative ((<$>))
-import Control.Monad (when)
+-- import Control.Applicative ((<$>))
+-- import Control.Monad (when)
 import Data.Char
 import Data.List (intersperse)
 import System.Environment (getArgs)
@@ -34,19 +34,18 @@ res = P.try (P.string "0-1") <|> P.try (P.string "1/2-1/2")
 game :: Parser Entry
 game = do
     w <- enclosed '[' ']' $ literal "White" >> P.space >> quoted engine
-    P.space
+    _ <- P.space
     b <- enclosed '[' ']' $ literal "Black" >> P.space >> quoted engine
-    P.space
+    _ <- P.space
     q <- enclosed '[' ']' $ literal "Result" >> P.space >> quoted res
-    P.space
+    _ <- P.space
     r <- res
     return $ Entry { white = w, black = b, hres = q, result = r }
 
 parseEntry :: String -> Either P.ParseError Entry
 parseEntry = P.parse game ""
 
-debug = False
-
+main :: IO ()
 main = do
     args <- getArgs
     -- This function determines which condition should a game satisfy
@@ -62,7 +61,7 @@ perGame :: (String -> String -> Bool) -> (Int, Int, [String]) -> IO ()
 perGame f (ri, ro, ls) = do
     let gs = concat $ intersperse " " ls
     case parseEntry gs of
-        Left err -> when debug $ do
+        Left err -> do
             putStrLn $ "\n*** Lines " ++ show ri ++ " to " ++ show ro
             putStrLn $ show err
             putStrLn gs

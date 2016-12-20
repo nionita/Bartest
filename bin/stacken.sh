@@ -1,4 +1,4 @@
-#/usr/bin/env bash
+#/bin/bash
  
 error() {
         what=$1

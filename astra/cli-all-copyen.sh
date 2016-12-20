@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 
 ahosts=$(./cli-all-hosts.sh E)
-cd /j/Projects/MakeEc2/Engines
+
+mkdir tempEng
+cd tempEng
 
 elist=''
 for e in $*
@@ -20,3 +22,7 @@ do
 	done
 	ssh $m 'cd ~/Engines; chmod +x '$elist
 done
+
+# cleanup
+cd ..
+rm -r tempEng
