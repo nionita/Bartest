@@ -6,7 +6,6 @@ Created on Mon Apr 24 15:59:24 2017
 """
 
 import numpy as np
-import cv2
 import random
 import math
 import subprocess
@@ -14,77 +13,19 @@ import re
 import os
 import pickle
 
-# Stochastic optimisation with Thompson sampling
-# We have to optimize a stochastic function of n parameters,
-# but we can only get random results from an experiment (match)
-# which delivers only the values 0 or 1
-# The expectation of the result is proportional to the function value
+# DSPSA
+# We have to optimize a stochastic function of n integer parameters,
+# but we can only get noisy results from measurements
 
 # Transform Elo to fraction and back
 ln10p400 = -math.log(10.0) / 400.0
 iln10p400 = 1. / ln10p400
-                    
+
 def elo2frac(elo):
     return 1.0 / (1.0 + math.exp(elo * ln10p400))
 
 def frac2elo(frac):
     return math.log(1. / frac - 1.) * iln10p400
-
-# A class to help with the Thompson sampling
-class Thompson:
-    thid = 0
-
-    def __init__(self, prion=0, prize=0):
-        Thompson.thid += 1
-        self.thid  = Thompson.thid
-        self.zeros = 0
-        self.ones  = 0
-        self.prion = prion
-        self.prize = prize
-
-    def add_prior(self, won, lost):
-        self.prion += won
-        self.prize += lost
-
-    def simulate(self, fac):
-        a = self.ones  + int(self.prion / fac) + 1
-        b = self.zeros + int(self.prize / fac) + 1
-        return random.betavariate(a, b)
-
-    def played(self):
-        return self.zeros + self.ones
-
-    def score(self):
-        p = self.played()
-        if p == 0 or self.ones == 0:
-            return 0., -math.inf
-        elif self.ones == p:
-            return 1., math.inf
-        else:
-            r = self.ones / p
-            return r, frac2elo(r)
-
-    def prec(self):
-        p = self.played()
-        if p == 0:
-            return math.inf
-        else:
-            return 500. / math.sqrt(p)
-
-    def lowscore(self):
-        p = self.played()
-        if p == 0 or self.ones == 0:
-            return 0., -math.inf
-        elif self.ones == p:
-            return 1., math.inf
-        else:
-            r = self.ones / p
-            m = 500. / math.sqrt(p)
-            return r - elo2frac(m), frac2elo(r) - m
-
-    def reward(self, won, lost):
-        self.ones += won
-        self.zeros += lost
 
 # The optimisation: we make a simplified one first, to check the concept
 # It optimizes in integers
@@ -116,7 +57,7 @@ class Optimizer:
             if s:
                 xl[i] = xl[i] + d
             else:
-                xl[i] = xl[i] - d    
+                xl[i] = xl[i] - d
             t = tuple(xl)
             if t not in self.simp:
                 self.simp.append(t)
@@ -197,7 +138,7 @@ class Optimizer:
             elif v == bestv:
                 bests.append(x)
         return bests, bestv
-    
+
     def newbest(self):
         self.since += 1
         if self.since > self.steps:
@@ -249,6 +190,63 @@ class Optimizer:
         with open(fn, 'wb') as file:
             pickle.Pickler(file, 2).dump(self)
 
+"""
+Implementation of DSPSA
+"""
+class DSPSA:
+    def __init__(self, theta, smalla, biga=None, alpha=0.501, gmax=None, scale=None, msteps=1000, rend=None):
+        self.smalla = smalla
+        self.biga = biga
+        self.alpha = alpha
+        self.gmax = gmax
+        self.msteps = msteps
+        self.rend = rend
+        self.theta = np.array(theta, dtype=np.float32)
+        if scale is None:
+            self.scale = scale
+        else:
+            self.scale = np.array(scale, dtype=np.float32)
+
+    def optimize(self, f, config):
+        p = self.theta.shape[0]
+        theta = self.theta
+        rtheta = np.rint(theta)
+        since = 0
+        for k in range(self.msteps):
+            if k % 1 == 0:
+                print('Step:', k)
+            delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
+            delta = np.array(delta, dtype=np.float32) / 2
+            if self.scale is not None:
+                delta = delta * self.scale
+            pi = np.floor(theta) + np.ones(p, dtype=np.float32) / 2
+            tp = np.rint(pi + delta)
+            fp = f(tp, config)
+            if k % 1 == 0:
+                print('tp:', tp, 'fp:', fp)
+            tm = np.rint(pi - delta)
+            fm = f(tm, config)
+            if k % 1 == 0:
+                print('tm:', tm, 'fm:', fm)
+            gk = (fp - fm) * delta
+            if self.scale is not None:
+                gk = gk / self.scale
+            if self.gmax is not None:
+                gk = max(-self.gmax, min(self.gmax, (fp - fm))) * delta
+            ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
+            theta = theta - ak * gk
+            if k % 1 == 0:
+                print('theta:', theta)
+            ntheta = np.rint(theta)
+            if np.all(ntheta == rtheta):
+                since += 1
+                if self.rend is not None and since >= self.rend:
+                    break
+            else:
+                rtheta = ntheta
+                since = 0
+        return rtheta
+
 class Config:
     def __init__(self, selfplay='', playdir='.', ipgnfile='', depth=4, games=16, params=[]):
         self.selfplay = selfplay
@@ -258,9 +256,48 @@ class Config:
         self.games = games
         self.params = params
 
-config = Config(selfplay=r'C:\astra\SelfPlay-op.exe',
-                playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
-                depth=4, games=4, params=['mid.outpostW', 'mid.outpostS'])
+paramWeights = [
+          #('kingSafe'      , 1, 0, 1),
+          ('kingOpen'      , 5, 0, 1),
+          ('kingPlaceCent' , 6, 0, 1),
+          ('kingPlacePwns' , 0, 6, 1),
+          ('kingPawn1'     , 8, 48, 1),
+          ('kingPawn2'     , 12, 64, 1),
+          ('rookHOpen'     , 160, 180, 4),
+          ('rookOpen'      , 211, 186, 4),
+          ('rookConn'      , 94,  53, 2),
+          ('mobilityKnight', 46, 61, 1),
+          ('mobilityBishop', 52, 29, 1),
+          ('mobilityRook'  , 23, 25, 1),
+          ('mobilityQueen' ,  4,  3, 1),
+          ('centerPAtts'   , 76, 59, 1),
+          ('centerNAtts'   , 44, 41, 1),
+          ('centerBAtts'   , 52, 38, 1),
+          ('centerRAtts'   , 10, 30, 1),
+          ('centerQAtts'   ,  4, 55, 1),
+          ('centerKAtts'   ,  2, 54, 1),
+          #('space'         ,  1,  0, 1),
+          ('adversAtts'       ,  2, 14, 1),
+          ('isolPawns'     , (-37), (-108), 2),
+          ('isolPassed'    , (-51), (-152), 2),
+          ('backPawns'     , (-113), (-151), 2),
+          ('backPOpen'     , (-23),  (-20), 1),
+          ('enpHanging'    , (-21), (-34), 1),
+          ('enpEnPrise'    , (-28), (-26), 1),
+          ('enpAttacked'   ,  (-6), (-7), 1),
+          ('ewWepAttacked'   , 48, 64, 1),
+          ('lastLinePenalty', 107, 3, 2),
+          ('bishopPair'    , 390, 320, 4),
+          ('bishopPawns'   , (-22), (-58), 1),
+          ('redundanceRook', (-29), (-61), 1),
+          ('rookPawn'      , (-47), (-37), 1),
+          ('advPawn5'      ,    4, 118, 2),
+          ('advPawn6'      ,  356, 333, 4),
+          ('pawnBlockP'    , (-115), (-90), 2),
+          ('pawnBlockO'    ,  (-20), (-23), 1),
+          ('pawnBlockA'    ,  (-13), (-70), 1),
+          ('passPawnLev'   ,  0, 9, 1),
+        ]
 
 resre = re.compile(r'End result')
 wdlre = re.compile('[() ,]')
@@ -268,7 +305,7 @@ wdlre = re.compile('[() ,]')
 # Play a match with a given number of games
 # Player 1 is configured with our input point
 # Player 2 is an empty config, which is the reference configuration
-def play(x):
+def play(x, config):
     os.chdir(config.playdir)
     with open('player1.cfg', 'w', encoding='utf-8') as plf:
         for p, v in zip(config.params, x):
@@ -290,95 +327,55 @@ def play(x):
                 #print(vals)
                 _, _, _, ws, ds, ls, _ = wdlre.split(line)
                 w = int(ws)
-                #d = int(ds)
+                d = int(ds)
                 l = int(ls)
                 #print('I found the result %d, %d, %d' % (w, d, l))
     if w == None:
         raise RuntimeError('No result from self play')
     else:
-        return w, l
+        return (w + 0.5 * d) / (w + d + l)
 
-class Visualize:
-    #fact = 20
-    fact = 10
-    xorg = 320
-    yorg = 320
-    ca = 255. * 3. / 2.
-    
-    def __init__(self, p, xm):
-        x, y = p
-        self.ox = x
-        self.oy = y
-        self.mi = -xm
-        self.ma = xm
-    
-    def coord(self, x, y, lat):
-        x = x - self.ox
-        y = y - self.oy
-        if x >= self.mi and x <= self.ma and y >= self.mi and y <= self.ma:
-            xi =       x * Visualize.fact + Visualize.xorg
-            yi = 640 - y * Visualize.fact - Visualize.yorg
-            return True, xi - lat, yi - lat, xi + lat, yi + lat
-        else:
-            return False, 0, 0, 0, 0
-        
-    def color(self, s):
-        r = min(255, int(Visualize.ca * s))
-        return (r, r, r)
+#def square(x):
+#    f = (x[0] * x[0] + 2 * x[1] * x[1])/10 + np.random.randn()
+#    return f
+#
+#def banana(v):
+#    x = v[0]
+#    y = v[1]
+#    f = (1 - x) * (1 - x) + 100 * (y - x*x) * (y - x*x) + np.random.randn()
+#    return f
 
 if __name__ == '__main__':
-    x0, y0 = 73, 174
-    x = (x0, y0)
-    viz = True
-    if viz:
-        img = np.zeros((640, 640, 3), np.uint8)
-        #visual = Visualize(x, 15)
-        visual = Visualize(x, 30)
-        _, xc1, yc1, xc2, yc2 = visual.coord(x0, y0, 315)
-        c = visual.color(1)
-        img = cv2.rectangle(img, (xc1, yc1), (xc2, yc2), c, 1)
-        cv2.imshow('img', img)
-        k1 = cv2.waitKey(1) & 0xFF
-    #opt = Optimizer(x, steps=5, radius=3, bandits=4)
-    opt = Optimizer(x, steps=7, radius=3, bandits=3)
-    opt.save('init')
-    i = 0
-    maxi = 10000
-    feed = 10
-    reps = 100
-    save = 500
-    stop = False
-    while i < maxi and not stop:
-        i = i + 1
-        x, y = opt.step_prep()
-        if viz:
-            #draw, xc1, yc1, xc2, yc2 = visual.coord(x, y, 9)
-            draw, xc1, yc1, xc2, yc2 = visual.coord(x, y, 4)
-            if draw:
-                img = cv2.rectangle(img, (xc1, yc1), (xc2, yc2), (0, 255, 0), -1)
-                cv2.imshow('img', img)
-        k = cv2.waitKey(1) & 0xFF
-        if k == ord('q'):
-            stop = True
-        w, l, s = opt.step_exec()
-        if i % feed == 0:
-            print('%d games' % i)
-        if i % reps == 0:
-            opt.report()
-        if i % save == 0:
-            opt.save(str(i / save))
-        if viz:
-            if draw:
-                c = visual.color(s)
-                img = cv2.rectangle(img, (xc1, yc1), (xc2, yc2), c, -1)
-                cv2.imshow('img', img)
-            #if cv2.waitKey(1) & 0xFF == ord('q'):
-            #    break
+    pnames = []
+    pinits = []
+    pscale = []
+    hasScale = False
+    for name, mid, end, scale in paramWeights:
+        #scale = scale * 5
+        pnames.append('mid.' + name)
+        pinits.append(mid)
+        pscale.append(scale)
+        pnames.append('end.' + name)
+        pinits.append(end)
+        pscale.append(scale)
+        if scale != 1:
+            hasScale = True
 
-    opt.report()
-    print('Max steps reached')
-    opt.save('fin')
-    if viz:
-        print('Press any key')
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    config = Config(selfplay=r'C:\astra\SelfPlay-soku.exe',
+                    playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
+                    depth=2, games=100,
+                    params=pnames)
+
+    if not hasScale:
+        scale = None
+
+    # A = 0.1 * M
+    # magn of theta <= 0.1
+    # we want first steps: 0.5
+    # Then: a = 0.5 / 0.1 * sqrt(A+1)
+    # a = 50
+    opt = DSPSA(pinits, 50, 100, alpha=0.501, scale=pscale, msteps=1000, rend=20)
+    r = opt.optimize(play, config)
+    print('Optimum:')
+    for n, v in zip(pnames, list(r)):
+        print(n, '=', v)
