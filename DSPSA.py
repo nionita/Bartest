@@ -12,6 +12,7 @@ import subprocess
 import re
 import os
 import pickle
+import sys
 
 # DSPSA
 # We have to optimize a stochastic function of n integer parameters,
@@ -194,7 +195,8 @@ class Optimizer:
 Implementation of DSPSA
 """
 class DSPSA:
-    def __init__(self, theta, smalla, biga=None, alpha=0.501, gmax=None, scale=None, msteps=1000, rend=None):
+    def __init__(self, pnames, theta, smalla, biga=None, alpha=0.501, gmax=None, scale=None, msteps=1000, rend=None):
+        self.pnames = pnames
         self.smalla = smalla
         self.biga = biga
         self.alpha = alpha
@@ -234,7 +236,8 @@ class DSPSA:
             if self.gmax is not None:
                 gk = max(-self.gmax, min(self.gmax, (fp - fm))) * delta
             ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
-            theta = theta - ak * gk
+            # Here: + because we maximize!
+            theta = theta + ak * gk
             if k % 1 == 0:
                 print('theta:', theta)
             ntheta = np.rint(theta)
@@ -245,7 +248,21 @@ class DSPSA:
             else:
                 rtheta = ntheta
                 since = 0
+            self.report(theta)
         return rtheta
+
+    def report(self, vec, title=None, file='report.txt'):
+        if title is None:
+            title = 'Current best:'
+        if file is None:
+            repf = sys.stdout
+        else:
+            repf = open(file, 'w', encoding='utf-8')
+        print(title, file=repf)
+        for n, v in zip(self.pnames, list(vec)):
+            print(n, '=', v, file=repf)
+        if file is None:
+            repf.close()
 
 class Config:
     def __init__(self, selfplay='', playdir='.', ipgnfile='', depth=4, games=16, params=[]):
@@ -373,9 +390,7 @@ if __name__ == '__main__':
     # magn of theta <= 0.1
     # we want first steps: 0.5
     # Then: a = 0.5 / 0.1 * sqrt(A+1)
-    # a = 50
-    opt = DSPSA(pinits, 50, 100, alpha=0.501, scale=pscale, msteps=1000, rend=20)
+    opt = DSPSA(pnames, pinits, 28, 30, alpha=0.501, scale=pscale, msteps=300, rend=20)
     r = opt.optimize(play, config)
-    print('Optimum:')
-    for n, v in zip(pnames, list(r)):
-        print(n, '=', v)
+    opt.report(r, title='Optimum', file='optimum.txt')
+    opt.report(r, title='Optimum', file=None)
