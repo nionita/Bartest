@@ -12,7 +12,6 @@ import subprocess
 import re
 import os
 import pickle
-import sys
 
 # DSPSA
 # We have to optimize a stochastic function of n integer parameters,
@@ -230,9 +229,7 @@ class DSPSA:
             fm = f(tm, config)
             if k % 1 == 0:
                 print('tm:', tm, 'fm:', fm)
-            gk = (fp - fm) * delta
-            if self.scale is not None:
-                gk = gk / self.scale
+            gk = (fp - fm) / delta
             if self.gmax is not None:
                 gk = max(-self.gmax, min(self.gmax, (fp - fm))) * delta
             ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
@@ -255,14 +252,14 @@ class DSPSA:
         if title is None:
             title = 'Current best:'
         if file is None:
-            repf = sys.stdout
+            print(title)
+            for n, v in zip(self.pnames, list(vec)):
+                print(n, '=', v)
         else:
-            repf = open(file, 'w', encoding='utf-8')
-        print(title, file=repf)
-        for n, v in zip(self.pnames, list(vec)):
-            print(n, '=', v, file=repf)
-        if file is None:
-            repf.close()
+            with open(file, 'w', encoding='utf-8') as repf:
+                print(title, file=repf)
+                for n, v in zip(self.pnames, list(vec)):
+                    print(n, '=', v, file=repf)
 
 class Config:
     def __init__(self, selfplay='', playdir='.', ipgnfile='', depth=4, games=16, params=[]):
@@ -302,7 +299,7 @@ paramWeights = [
           ('enpHanging'    , (-21), (-34), 1),
           ('enpEnPrise'    , (-28), (-26), 1),
           ('enpAttacked'   ,  (-6), (-7), 1),
-          ('ewWepAttacked'   , 48, 64, 1),
+          ('wepAttacked'   , 48, 64, 1),
           ('lastLinePenalty', 107, 3, 2),
           ('bishopPair'    , 390, 320, 4),
           ('bishopPawns'   , (-22), (-58), 1),
@@ -368,7 +365,6 @@ if __name__ == '__main__':
     pscale = []
     hasScale = False
     for name, mid, end, scale in paramWeights:
-        #scale = scale * 5
         pnames.append('mid.' + name)
         pinits.append(mid)
         pscale.append(scale)
