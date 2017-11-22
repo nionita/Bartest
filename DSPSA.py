@@ -194,19 +194,14 @@ class Optimizer:
 Implementation of DSPSA
 """
 class DSPSA:
-    def __init__(self, pnames, theta, smalla, biga=None, alpha=0.501, gmax=None, scale=None, msteps=1000, rend=None):
+    def __init__(self, pnames, theta, laststep, alpha=0.501, msteps=1000, rend=None):
         self.pnames = pnames
-        self.smalla = smalla
-        self.biga = biga
+        self.smalla = laststep * math.pow(1.1 * msteps + 1, alpha)
+        self.biga = 0.1 * msteps
         self.alpha = alpha
-        self.gmax = gmax
         self.msteps = msteps
-        self.rend = rend
         self.theta = np.array(theta, dtype=np.float32)
-        if scale is None:
-            self.scale = scale
-        else:
-            self.scale = np.array(scale, dtype=np.float32)
+        self.rend = rend
 
     def optimize(self, f, config):
         p = self.theta.shape[0]
@@ -217,22 +212,14 @@ class DSPSA:
             if k % 1 == 0:
                 print('Step:', k)
             delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
-            delta = np.array(delta, dtype=np.float32) / 2
-            if self.scale is not None:
-                delta = delta * self.scale
             pi = np.floor(theta) + np.ones(p, dtype=np.float32) / 2
-            tp = np.rint(pi + delta)
-            fp = f(tp, config)
-            if k % 1 == 0:
-                print('tp:', tp, 'fp:', fp)
-            tm = np.rint(pi - delta)
-            fm = f(tm, config)
-            if k % 1 == 0:
-                print('tm:', tm, 'fm:', fm)
-            gk = (fp - fm) / delta
-            if self.gmax is not None:
-                gk = max(-self.gmax, min(self.gmax, (fp - fm))) * delta
+            tp = np.rint(pi + delta / 2)
+            tm = np.rint(pi - delta / 2)
+            df = f(tp, tm, config)
+            gk = df / delta
             ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
+            if k % 1 == 0:
+                print('df:', df, 'ak:', ak)
             # Here: + because we maximize!
             theta = theta + ak * gk
             if k % 1 == 0:
@@ -245,7 +232,8 @@ class DSPSA:
             else:
                 rtheta = ntheta
                 since = 0
-            self.report(theta)
+            if k % 10 == 0:
+                self.report(theta)
         return rtheta
 
     def report(self, vec, title=None, file='report.txt'):
@@ -316,17 +304,20 @@ paramWeights = [
 resre = re.compile(r'End result')
 wdlre = re.compile('[() ,]')
 
-# Play a match with a given number of games
-# Player 1 is configured with our input point
-# Player 2 is an empty config, which is the reference configuration
-def play(x, config):
+# Play a match with a given number of games between theta+ and theta-
+# Player 1 is theta+
+# Player 2 is theta-
+def play(tp, tm, config):
     os.chdir(config.playdir)
-    with open('player1.cfg', 'w', encoding='utf-8') as plf:
-        for p, v in zip(config.params, x):
+    with open('playerp.cfg', 'w', encoding='utf-8') as plf:
+        for p, v in zip(config.params, tp):
+            plf.write('%s=%d\n' % (p, v))
+    with open('playerm.cfg', 'w', encoding='utf-8') as plf:
+        for p, v in zip(config.params, tm):
             plf.write('%s=%d\n' % (p, v))
     skip = random.randint(0, 25000)
     #print('Skip = %d' % skip)
-    args = [config.selfplay, '-m', config.playdir, '-a', 'player1.cfg', '-b', 'player0.cfg',
+    args = [config.selfplay, '-m', config.playdir, '-a', 'playerp.cfg', '-b', 'playerm.cfg',
             '-i', config.ipgnfile, '-d', str(config.depth), '-s', str(skip), '-f', str(config.games)]
     #print('Will start:')
     #print(args)
@@ -347,7 +338,7 @@ def play(x, config):
     if w == None:
         raise RuntimeError('No result from self play')
     else:
-        return (w + 0.5 * d) / (w + d + l)
+        return (w + 0.5 * d) / (w + d + l) - 0.5
 
 #def square(x):
 #    f = (x[0] * x[0] + 2 * x[1] * x[1])/10 + np.random.randn()
@@ -362,31 +353,27 @@ def play(x, config):
 if __name__ == '__main__':
     pnames = []
     pinits = []
-    pscale = []
-    hasScale = False
+    #pscale = []
+    #hasScale = False
     for name, mid, end, scale in paramWeights:
         pnames.append('mid.' + name)
         pinits.append(mid)
-        pscale.append(scale)
+        #pscale.append(scale)
         pnames.append('end.' + name)
         pinits.append(end)
-        pscale.append(scale)
-        if scale != 1:
-            hasScale = True
+        #pscale.append(scale)
+        #if scale != 1:
+        #    hasScale = True
 
     config = Config(selfplay=r'C:\astra\SelfPlay-soku.exe',
                     playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
-                    depth=2, games=100,
+                    depth=4, games=2,
                     params=pnames)
 
-    if not hasScale:
-        scale = None
+    #if not hasScale:
+    #    scale = None
 
-    # A = 0.1 * M
-    # magn of theta <= 0.1
-    # we want first steps: 0.5
-    # Then: a = 0.5 / 0.1 * sqrt(A+1)
-    opt = DSPSA(pnames, pinits, 28, 30, alpha=0.501, scale=pscale, msteps=300, rend=20)
+    opt = DSPSA(pnames, pinits, 0.02, msteps=4000)
     r = opt.optimize(play, config)
     opt.report(r, title='Optimum', file='optimum.txt')
     opt.report(r, title='Optimum', file=None)
