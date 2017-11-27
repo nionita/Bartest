@@ -194,13 +194,17 @@ class Optimizer:
 Implementation of DSPSA
 """
 class DSPSA:
-    def __init__(self, pnames, theta, laststep, alpha=0.501, msteps=1000, rend=None):
+    def __init__(self, pnames, theta, laststep, alpha=0.501, msteps=1000, scale=None, rend=None):
         self.pnames = pnames
         self.smalla = laststep * math.pow(1.1 * msteps + 1, alpha)
         self.biga = 0.1 * msteps
         self.alpha = alpha
         self.msteps = msteps
         self.theta = np.array(theta, dtype=np.float32)
+        if scale is None:
+            self.scale = None
+        else:
+            self.scale = np.array(scale, dtype=np.float32)
         self.rend = rend
 
     def optimize(self, f, config):
@@ -236,6 +240,74 @@ class DSPSA:
                 self.report(theta)
         return rtheta
 
+    """
+    Momentum optimizer with friction
+    beta1 + beta2 <= 1
+    """
+    def momentum(self, f, config, beta1=0.8, beta2=0.1):
+        p = self.theta.shape[0]
+        gm = np.zeros(p, dtype=np.float32)
+        theta = self.theta
+        for k in range(self.msteps):
+            if k % 1 == 0:
+                print('Step:', k)
+            delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
+            pi = np.floor(theta) + np.ones(p, dtype=np.float32) / 2
+            tp = np.rint(pi + delta / 2)
+            tm = np.rint(pi - delta / 2)
+            df = f(tp, tm, config)
+            gk = df / delta
+            gm = gm * beta1 + gk * beta2
+            # We wouldn't need biga, as first steps are biased towards 0 anyway
+            ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
+            if k % 1 == 0:
+                print('df:', df, 'ak:', ak)
+            # Here: + because we maximize!
+            theta = theta + ak * gm
+            if k % 1 == 0:
+                print('theta:', theta)
+            if k % 10 == 0:
+                self.report(theta)
+        return np.rint(theta)
+
+    """
+    Adadelta should mantain different learning rates per dimension, but in our
+    case all dimensions would have equal rates, because in every step only
+    the sign is different, and we can't break the simmetry.
+    Also, our gradient is just an estimate.
+    To deal with these problems we mantain an average gradient and work with it
+    as if it would be the current one
+    """
+    def adadelta(self, f, config, beta=0.9, gamma=0.9):
+        eps = 1E-6
+        p = self.theta.shape[0]
+        gm = np.zeros(p, dtype=np.float32)
+        eg2 = np.zeros(p, dtype=np.float32)
+        ed2 = np.zeros(p, dtype=np.float32)
+        theta = self.theta
+        for k in range(self.msteps):
+            print('Step:', k)
+            delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
+            if self.scale is not None:
+                delta = delta * self.scale
+            pi = np.floor(theta) + np.ones(p, dtype=np.float32) / 2
+            tp = np.rint(pi + delta / 2)
+            tm = np.rint(pi - delta / 2)
+            df = f(tp, tm, config)
+            gk = df / delta
+            gm = beta * gm + (1 - beta) * gk
+            eg2 = gamma * eg2 + (1 - gamma) * gm * gm
+            dtheta = np.sqrt((ed2 + eps) / (eg2 + eps)) * gm
+            ed2 = gamma * ed2 + (1 - gamma) * dtheta * dtheta
+            # We don't need other learning rates
+            # Here: + because we maximize!
+            theta = theta + dtheta
+            print('df:', df, 'gm norm:', np.linalg.norm(gm), 'dt norm:', np.linalg.norm(dtheta))
+            print('theta:', theta)
+            if k % 10 == 0:
+                self.report(theta)
+        return np.rint(theta)
+
     def report(self, vec, title=None, file='report.txt'):
         if title is None:
             title = 'Current best:'
@@ -263,41 +335,41 @@ paramWeights = [
           ('kingOpen'      , 5, 0, 1),
           ('kingPlaceCent' , 6, 0, 1),
           ('kingPlacePwns' , 0, 6, 1),
-          ('kingPawn1'     , 8, 48, 1),
-          ('kingPawn2'     , 12, 64, 1),
+          ('kingPawn1'     , 8, 48, 5),
+          ('kingPawn2'     , 12, 64, 5),
           ('rookHOpen'     , 160, 180, 4),
           ('rookOpen'      , 211, 186, 4),
-          ('rookConn'      , 94,  53, 2),
+          ('rookConn'      , 94,  53, 5),
           ('mobilityKnight', 46, 61, 1),
           ('mobilityBishop', 52, 29, 1),
           ('mobilityRook'  , 23, 25, 1),
           ('mobilityQueen' ,  4,  3, 1),
-          ('centerPAtts'   , 76, 59, 1),
-          ('centerNAtts'   , 44, 41, 1),
-          ('centerBAtts'   , 52, 38, 1),
+          ('centerPAtts'   , 76, 59, 3),
+          ('centerNAtts'   , 44, 41, 3),
+          ('centerBAtts'   , 52, 38, 3),
           ('centerRAtts'   , 10, 30, 1),
           ('centerQAtts'   ,  4, 55, 1),
           ('centerKAtts'   ,  2, 54, 1),
           #('space'         ,  1,  0, 1),
           ('adversAtts'       ,  2, 14, 1),
-          ('isolPawns'     , (-37), (-108), 2),
-          ('isolPassed'    , (-51), (-152), 2),
-          ('backPawns'     , (-113), (-151), 2),
-          ('backPOpen'     , (-23),  (-20), 1),
-          ('enpHanging'    , (-21), (-34), 1),
-          ('enpEnPrise'    , (-28), (-26), 1),
-          ('enpAttacked'   ,  (-6), (-7), 1),
-          ('wepAttacked'   , 48, 64, 1),
+          ('isolPawns'     , (-37), (-108), 5),
+          ('isolPassed'    , (-51), (-152), 5),
+          ('backPawns'     , (-113), (-151), 5),
+          ('backPOpen'     , (-23),  (-20), 5),
+          ('enpHanging'    , (-21), (-34), 4),
+          ('enpEnPrise'    , (-28), (-26), 4),
+          ('enpAttacked'   ,  (-6), (-7), 2),
+          ('wepAttacked'   , 48, 64, 4),
           ('lastLinePenalty', 107, 3, 2),
-          ('bishopPair'    , 390, 320, 4),
-          ('bishopPawns'   , (-22), (-58), 1),
-          ('redundanceRook', (-29), (-61), 1),
-          ('rookPawn'      , (-47), (-37), 1),
-          ('advPawn5'      ,    4, 118, 2),
-          ('advPawn6'      ,  356, 333, 4),
-          ('pawnBlockP'    , (-115), (-90), 2),
-          ('pawnBlockO'    ,  (-20), (-23), 1),
-          ('pawnBlockA'    ,  (-13), (-70), 1),
+          ('bishopPair'    , 390, 320, 5),
+          ('bishopPawns'   , (-22), (-58), 2),
+          ('redundanceRook', (-29), (-61), 5),
+          ('rookPawn'      , (-47), (-37), 3),
+          ('advPawn5'      ,    4, 118, 3),
+          ('advPawn6'      ,  356, 333, 5),
+          ('pawnBlockP'    , (-115), (-90), 3),
+          ('pawnBlockO'    ,  (-20), (-23), 3),
+          ('pawnBlockA'    ,  (-13), (-70), 3),
           ('passPawnLev'   ,  0, 9, 1),
         ]
 
@@ -340,40 +412,57 @@ def play(tp, tm, config):
     else:
         return (w + 0.5 * d) / (w + d + l) - 0.5
 
-#def square(x):
-#    f = (x[0] * x[0] + 2 * x[1] * x[1])/10 + np.random.randn()
-#    return f
-#
-#def banana(v):
-#    x = v[0]
-#    y = v[1]
-#    f = (1 - x) * (1 - x) + 100 * (y - x*x) * (y - x*x) + np.random.randn()
-#    return f
+def square(x):
+    f = (x[0] * x[0] + 2 * x[1] * x[1])/100 + np.random.randn()
+    return f
+
+def square_diff(vp, vm, conf):
+    fp = square(vp)
+    fm = square(vm)
+    # Here we invert to minimize
+    return fm - fp
+
+def banana(v):
+    x = v[0]
+    y = v[1]
+    f = (1 - x) * (1 - x) + 100 * (y - x*x) * (y - x*x) + np.random.randn()
+    return f
+
+def banana_diff(vp, vm, conf):
+    fp = banana(vp)
+    fm = banana(vm)
+    # Here we invert to minimize
+    return fm - fp
 
 if __name__ == '__main__':
     pnames = []
     pinits = []
-    #pscale = []
-    #hasScale = False
+    pscale = []
+    hasScale = False
     for name, mid, end, scale in paramWeights:
         pnames.append('mid.' + name)
         pinits.append(mid)
-        #pscale.append(scale)
+        pscale.append(scale)
         pnames.append('end.' + name)
         pinits.append(end)
-        #pscale.append(scale)
-        #if scale != 1:
-        #    hasScale = True
+        pscale.append(scale)
+        if scale != 1:
+            hasScale = True
 
     config = Config(selfplay=r'C:\astra\SelfPlay-soku.exe',
                     playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
                     depth=4, games=2,
                     params=pnames)
 
-    #if not hasScale:
-    #    scale = None
+    if not hasScale:
+        scale = None
 
-    opt = DSPSA(pnames, pinits, 0.02, msteps=4000)
-    r = opt.optimize(play, config)
+    opt = DSPSA(pnames, pinits, 0.03, msteps=10000, scale=scale)
+    #r = opt.optimize(play, config)
+    #r = opt.momentum(play, config)
+    r = opt.adadelta(play, config, beta=0.98)
+    #opt = DSPSA(['x', 'y'], [3, 3], 0.03, msteps=100)
+    #r = opt.adadelta(banana_diff, config)
+    #r = opt.adadelta(square_diff, config)
     opt.report(r, title='Optimum', file='optimum.txt')
     opt.report(r, title='Optimum', file=None)
