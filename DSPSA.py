@@ -61,6 +61,9 @@ class DSPSA:
             print('mius:', tm)
             df = f(tp, tm, config)
             gk = df / delta
+            # Is this rescale better? (added on 8th May 2018)
+            if self.scale is not None:
+                gk = gk * self.scale
             ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
             print('df:', df, 'ak:', ak)
             # Here: + because we maximize!
@@ -190,11 +193,13 @@ params = [
 
 weights = [
       #('kingSafe'      , 1, 0, 1),
-      #('kingOpen'      , 5, 0, 1),
-      #('kingPlaceCent' , 6, 0, 1),
-      #('kingPlacePwns' , 400, 200, 10),
-      ('kingPawn1'     , 11, 42, 16),
-      ('kingPawn2'     , 10, 69, 16),
+      ('kingOpen'      , 2, 4, 1),
+      ('kingPlaceCent' , 8, 1, 1),
+      ('kingPlacePwns' , 0, 4, 1),
+      #('kingPawn1'     , 11, 42, 16),
+      #('kingPawn2'     , 10, 69, 16),
+      ('kingThreat1'     , 0, 0, 64),
+      ('kingThreat2'     , 0, 0, 64),
       #('rookHOpen'     , 167, 183, 32),
       #('rookOpen'      , 205, 179, 32),
       #('rookConn'      , 92,  58, 32),
@@ -203,32 +208,35 @@ weights = [
       #('mobilityBishop', 52, 29, 8),
       #('mobilityRook'  , 18, 32, 8),
       #('mobilityQueen' ,  4,  3, 4),
-      ('centerPAtts'   , 73, 59, 16),
+      #('centerPAtts'   , 73, 59, 16),
       #('centerNAtts'   , 44, 41, 16),
       #('centerBAtts'   , 52, 38, 16),
       #('centerRAtts'   , 14, 23, 16),
       #('centerQAtts'   ,  4, 55, 8),
-      #('centerKAtts'   ,  2, 54, 8),
+      ('centerKAtts'   ,  2, 62, 32),
       #('space'         ,  1,  0, 1),
       #('adversAtts'       ,  2, 14, 8),
-      ('isolPawns'     , -38, -105, 32),
-      ('isolPassed'    , -57, -150, 32),
-      ('backPawns'     , -105, -148, 32),
-      ('backPOpen'     , -23,  -26, 32),
-      #('enpHanging'    , (-21), (-34), 8),
-      #('enpEnPrise'    , (-28), (-26), 8),
-      #('enpAttacked'   ,  (-6), (-7), 8),
-      ('wepAttacked'   ,  46, 61, 16),
+      #('isolPawns'     , -38, -105, 32),
+      #('isolPassed'    , -57, -150, 32),
+      #('backPawns'     , -105, -148, 32),
+      #('backPOpen'     , -23,  -26, 32),
+      #('enpHanging'    , (-19), (-27), 8),
+      #('enpEnPrise'    , (-29), (-26), 8),
+      #('enpAttacked'   , (-2),  (-14), 8),
+      #('aspMinor'      , (-400), (-150), 32),
+      #('aspRook'       , (-800), (-250), 32),
+      #('aspQueen'      , (-1500), (-400), 32),
+      ('wepAttacked'   ,  35, 73, 32),
       #('lastLinePenalty', 107, 3, 32),
       #('bishopPair'    , 390, 320, 16),
       #('bishopPawns'   , (-22), (-58), 16),
       #('redundanceRook', (-27), (-52), 32),
-      ('rookPawn'      , -49, -27, 32),
-      ('advPawn5'      , 8, 109, 32),
-      ('advPawn6'      , 359, 330, 32),
-      ('pawnBlockP'    , -117, -95, 32),
-      ('pawnBlockO'    , -18, -27, 32),
-      ('pawnBlockA'    , -15, -64, 32),
+      #('rookPawn'      , -49, -27, 32),
+      #('advPawn5'      , 8, 109, 32),
+      #('advPawn6'      , 359, 330, 32),
+      #('pawnBlockP'    , -117, -95, 32),
+      ('pawnBlockO'    , -23, -26, 32),
+      ('pawnBlockA'    , -19, -69, 32),
       #('passPawnLev'   ,  2, 8, 1),
     ]
 
@@ -316,7 +324,7 @@ if __name__ == '__main__':
         if scale != 1:
             hasScale = True
 
-    config = Config(selfplay=r'C:\astra\SelfPlay-r7.exe',
+    config = Config(selfplay=r'C:\astra\SelfPlay-tbk.exe',
                     playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
                     depth=4, games=2,
                     params=pnames)
@@ -331,7 +339,7 @@ if __name__ == '__main__':
 #    #r = opt.adadelta(square_diff, config)
 
     # Real
-    opt = DSPSA(pnames, pinits, 5.0, msteps=2000, scale=pscale, rend=300)
+    opt = DSPSA(pnames, pinits, 0.1, msteps=2000, scale=pscale, rend=300)
     r = opt.optimize(play, config)
     #r = opt.momentum(play, config)
     #r = opt.adadelta(play, config, mult=20, beta=0.995, gamma=0.995, niu=0.999, eps=1E-8)
