@@ -11,6 +11,8 @@ import math
 import subprocess
 import re
 import os
+import os.path
+import sys
 
 # DSPSA
 # We have to optimize a stochastic function of n integer parameters,
@@ -26,24 +28,36 @@ def elo2frac(elo):
 def frac2elo(frac):
     return math.log(1. / frac - 1.) * iln10p400
 
+# Transforming mean result in an elo difference involves the constants log(10) and 400,
+# but at the end those are multiplicative, so it is just a matter of step size
+# Here frac is between 0 and 1, exclusive! More than 0.5 means the first player is better
+# We have guards for very excentric results, eps0 and eps1, which also limit the gradient amplitude:
+eps0 = 1e-2
+eps1 = 1 - eps0
+
+def elowish(frac):
+    frac = max(eps0, min(eps1, frac))
+    return -math.log(1 / frac - 1)
+
 """
 Implementation of DSPSA
 """
 class DSPSA:
-    def __init__(self, pnames, theta, laststep, alpha=0.501, msteps=1000, scale=None, rend=None):
-        self.pnames = pnames
-        self.smalla = laststep * math.pow(1.1 * msteps + 1, alpha)
-        self.biga = 0.1 * msteps
-        self.alpha = alpha
-        self.msteps = msteps
-        self.theta = np.array(theta, dtype=np.float32)
-        if scale is None:
+    def __init__(self, config):
+        self.config = config
+        self.pnames = config.pnames
+        self.smalla = config.laststep * math.pow(1.1 * config.msteps + 1, config.alpha)
+        self.biga = 0.1 * config.msteps
+        self.alpha = config.alpha
+        self.msteps = config.msteps
+        self.theta = np.array(config.pinits, dtype=np.float32)
+        if config.pscale is None:
             self.scale = None
         else:
-            self.scale = np.array(scale, dtype=np.float32)
-        self.rend = rend
+            self.scale = np.array(config.pscale, dtype=np.float32)
+        self.rend = config.rend
 
-    def optimize(self, f, config):
+    def optimize(self, f):
         print('scale:', self.scale)
         p = self.theta.shape[0]
         theta = self.theta
@@ -59,7 +73,7 @@ class DSPSA:
             tm = np.rint(pi - delta / 2)
             print('plus:', tp)
             print('mius:', tm)
-            df = f(tp, tm, config)
+            df = f(tp, tm, self.config)
             gk = df / delta
             # Is this rescale better? (added on 8th May 2018)
             if self.scale is not None:
@@ -166,79 +180,113 @@ class DSPSA:
                     print(n, '=', v, file=repf)
 
 class Config:
-    def __init__(self, selfplay='', playdir='.', ipgnfile='', depth=4, games=16, params=[]):
-        self.selfplay = selfplay
-        self.playdir = playdir
-        self.ipgnfile = ipgnfile
-        self.depth = depth
-        self.games = games
-        self.params = params
+    # These are acceptable fields in section 0, with theire type
+    # S is string, I integer and F float
+    fields = {
+        'selfplay': 'S',
+        'playdir': 'S',
+        'ipgnfile': 'S',
+        'depth': 'I',
+        'games': 'I',
+        'laststep': 'F',
+        'alpha': 'F',
+        'msteps': 'I',
+        'rend': 'I'
+    }
 
-params = [
-        #('epMovingMid',  156, 3),
-        #('epMovingEnd',  156, 3),
-        #('epMaterMinor', 1, 1),
-        #('epMaterRook',  4, 1),
-        #('epMaterQueen', 13, 1),
-        #('epMaterScale', 1, 1),
-        #('epMaterBonusScale', 5, 1),
-        #('epPawnBonusScale', 8, 1),
-        #('epPassKingProx',  13, 1),
-        #('epPassBlockO', 11, 1),
-        #('epPassBlockA', 17, 1),
-        #('epPassMin',    30, 1),
-        #('epPassMyCtrl', 6, 1),
-        #('epPassYoCtrl', 7, 1),
-    ]
+    def __init__(self, filename):
+        if not os.path.exists(filename):
+            raise Exception('Config file {} does not exist'.format(filename))
+        # Parameters for playing
+        self.playdir = ''
+        self.depth = 4
+        self.games = 16
+        # The parameters to optimize + start point
+        self.pnames = []
+        self.pinits = []
+        self.pscale = []
+        # Optimization hyper parameters
+        self.laststep = 0.1
+        self.alpha=0.501
+        self.msteps=1000
+        self.rend=None
+        self._readConfig(filename)
 
-weights = [
-      #('kingSafe'      , 1, 0, 1),
-      ('kingOpen'      , 2, 4, 1),
-      ('kingPlaceCent' , 8, 1, 1),
-      ('kingPlacePwns' , 0, 4, 1),
-      #('kingPawn1'     , 11, 42, 16),
-      #('kingPawn2'     , 10, 69, 16),
-      ('kingThreat1'     , 0, 0, 64),
-      ('kingThreat2'     , 0, 0, 64),
-      #('rookHOpen'     , 167, 183, 32),
-      #('rookOpen'      , 205, 179, 32),
-      #('rookConn'      , 92,  58, 32),
-      #('rook7th'       , 200, 160, 32),
-      #('mobilityKnight', 46, 61, 8),
-      #('mobilityBishop', 52, 29, 8),
-      #('mobilityRook'  , 18, 32, 8),
-      #('mobilityQueen' ,  4,  3, 4),
-      #('centerPAtts'   , 73, 59, 16),
-      #('centerNAtts'   , 44, 41, 16),
-      #('centerBAtts'   , 52, 38, 16),
-      #('centerRAtts'   , 14, 23, 16),
-      #('centerQAtts'   ,  4, 55, 8),
-      ('centerKAtts'   ,  2, 62, 32),
-      #('space'         ,  1,  0, 1),
-      #('adversAtts'       ,  2, 14, 8),
-      #('isolPawns'     , -38, -105, 32),
-      #('isolPassed'    , -57, -150, 32),
-      #('backPawns'     , -105, -148, 32),
-      #('backPOpen'     , -23,  -26, 32),
-      #('enpHanging'    , (-19), (-27), 8),
-      #('enpEnPrise'    , (-29), (-26), 8),
-      #('enpAttacked'   , (-2),  (-14), 8),
-      #('aspMinor'      , (-400), (-150), 32),
-      #('aspRook'       , (-800), (-250), 32),
-      #('aspQueen'      , (-1500), (-400), 32),
-      ('wepAttacked'   ,  35, 73, 32),
-      #('lastLinePenalty', 107, 3, 32),
-      #('bishopPair'    , 390, 320, 16),
-      #('bishopPawns'   , (-22), (-58), 16),
-      #('redundanceRook', (-27), (-52), 32),
-      #('rookPawn'      , -49, -27, 32),
-      #('advPawn5'      , 8, 109, 32),
-      #('advPawn6'      , 359, 330, 32),
-      #('pawnBlockP'    , -117, -95, 32),
-      ('pawnBlockO'    , -23, -26, 32),
-      ('pawnBlockA'    , -19, -69, 32),
-      #('passPawnLev'   ,  2, 8, 1),
-    ]
+    def _readConfig(self, conffile):
+        section = 0
+        lineno = 0
+        error = False
+        seen = set()
+        sectionNames = [dict(), dict()]
+        with open(conffile, 'r') as cof:
+            for line in cof:
+                lineno += 1
+                # split the comment path
+                line = re.split('#', line)[0].lstrip().rstrip()
+                if len(line) > 0:
+                    if line == '[params]':
+                        section = 1
+                    elif line == '[weights]':
+                        section = 2
+                    else:
+                        parts = re.split(':\s*', line, 1)
+                        name = parts[0]
+                        val = parts[1]
+                        if section == 0:
+                            if name in self.fields:
+                                if self.fields[name] == 'S':
+                                    self.__setattr__(name, val)
+                                elif self.fields[name] == 'I':
+                                    self.__setattr__(name, int(val))
+                                elif self.fields[name] == 'F':
+                                    self.__setattr__(name, float(val))
+                                else:
+                                    raise Exception('Wrong field type in Config class: {:s}'.format(self.fields[name]))
+                            else:
+                                print('Config error in line {:d}: unknown config name {:s}'.format(lineno, name))
+                                error = True
+                        else:
+                            vals = re.split(',\s*', val)
+                            if len(vals) == section + 1:
+                                if name in seen:
+                                    print('Config error in line {:d}: name {:s} already seen'.format(lineno, name))
+                                    error = True
+                                else:
+                                    seen.add(name)
+                                    sectionNames[section-1][name] = [int(v) for v in vals]
+                            else:
+                                print('Config error in line {:d}: should have {:d} values, it has {:d}'.format(lineno, section+1, len(vals)))
+                                error = True
+        if error:
+            raise Exception('Config has errors')
+        hasScale = False
+
+        # Collect the eval parameters
+        for name, vals in sectionNames[0].items():
+            val = vals[0]
+            scale = vals[1]
+            self.pnames.append(name)
+            self.pinits.append(val)
+            self.pscale.append(scale)
+            if scale != 1:
+                hasScale = True
+
+        # Collect the eval weights
+        for name, vals in sectionNames[1].items():
+            mid = vals[0]
+            end = vals[1]
+            scale = vals[2]
+            self.pnames.append('mid.' + name)
+            self.pinits.append(mid)
+            self.pscale.append(scale)
+            self.pnames.append('end.' + name)
+            self.pinits.append(end)
+            self.pscale.append(scale)
+            if scale != 1:
+                hasScale = True
+
+        if not hasScale:
+            self.pscale = None
 
 resre = re.compile(r'End result')
 wdlre = re.compile('[() ,]')
@@ -247,19 +295,20 @@ wdlre = re.compile('[() ,]')
 # Player 1 is theta+
 # Player 2 is theta-
 def play(tp, tm, config):
+    # print('chdir to', config.playdir)
     os.chdir(config.playdir)
     with open('playerp.cfg', 'w', encoding='utf-8') as plf:
-        for p, v in zip(config.params, tp):
+        for p, v in zip(config.pnames, tp):
             plf.write('%s=%d\n' % (p, v))
     with open('playerm.cfg', 'w', encoding='utf-8') as plf:
-        for p, v in zip(config.params, tm):
+        for p, v in zip(config.pnames, tm):
             plf.write('%s=%d\n' % (p, v))
     skip = random.randint(0, 25000)
     #print('Skip = %d' % skip)
     args = [config.selfplay, '-m', config.playdir, '-a', 'playerp.cfg', '-b', 'playerm.cfg',
             '-i', config.ipgnfile, '-d', str(config.depth), '-s', str(skip), '-f', str(config.games)]
-    #print('Will start:')
-    #print(args)
+    # print('Will start:')
+    # print(args)
     w = None
     # For windows: shell=True to hide the window of the child process
     with subprocess.Popen(args, bufsize=1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -278,7 +327,7 @@ def play(tp, tm, config):
         #raise RuntimeError('No result from self play')
         return 0
     else:
-        return 2 * (w + 0.5 * d) / (w + d + l) - 1
+        return elowish((w + 0.5 * d) / (w + d + l))
 
 def square(x):
     f = (x[0] * x[0] + 2 * x[1] * x[1])/100 + np.random.randn()
@@ -303,34 +352,15 @@ def banana_diff(vp, vm, conf):
     return fm - fp
 
 if __name__ == '__main__':
-    pnames = []
-    pinits = []
-    pscale = []
-    hasScale = False
-    for name, val, scale in params:
-        pnames.append(name)
-        pinits.append(val)
-        pscale.append(scale)
-        if scale != 1:
-            hasScale = True
 
-    for name, mid, end, scale in weights:
-        pnames.append('mid.' + name)
-        pinits.append(mid)
-        pscale.append(scale)
-        pnames.append('end.' + name)
-        pinits.append(end)
-        pscale.append(scale)
-        if scale != 1:
-            hasScale = True
-
-    config = Config(selfplay=r'C:\astra\SelfPlay-tbk.exe',
-                    playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
-                    depth=4, games=2,
-                    params=pnames)
-
-    if not hasScale:
-        scale = None
+    # config = Config(selfplay=r'C:\astra\SelfPlay-tbk.exe',
+    #                 playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
+    #                 depth=4, games=2,
+    #                 params=pnames)
+    confFile = sys.argv[1]
+    config = Config(confFile)
+    # print(config.pnames)
+    # print(config.pinits)
 
 #    # Tests
 #    opt = DSPSA(['x', 'y'], [3, 3], 0.03, msteps=10, scale=[3, 3])
@@ -339,9 +369,10 @@ if __name__ == '__main__':
 #    #r = opt.adadelta(square_diff, config)
 
     # Real
-    opt = DSPSA(pnames, pinits, 0.1, msteps=2000, scale=pscale, rend=300)
-    r = opt.optimize(play, config)
+    opt = DSPSA(config)
+    r = opt.optimize(play)
     #r = opt.momentum(play, config)
     #r = opt.adadelta(play, config, mult=20, beta=0.995, gamma=0.995, niu=0.999, eps=1E-8)
-    opt.report(r, title='Optimum', file='optimum.txt')
+    pref, suff = os.path.split(confFile)
+    opt.report(r, title='Optimum', file=os.path.join(pref, 'optimum-' + suff))
     opt.report(r, title='Optimum', file=None)
