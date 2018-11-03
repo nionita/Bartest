@@ -13,6 +13,9 @@ import re
 import os
 import os.path
 import sys
+import json
+import zlib
+import base64
 
 # DSPSA
 # We have to optimize a stochastic function of n integer parameters,
@@ -177,40 +180,53 @@ class Config:
     # S is string, I integer and F float
     fields = {
         'selfplay': 'S',
-        'playdir': 'S',
+        'playdir': ('S', ''),
         'ipgnfile': 'S',
-        'depth': 'I',
-        'games': 'I',
-        'laststep': 'F',
-        'alpha': 'F',
-        'msteps': 'I',
+        'depth': ('I', 4),
+        'games': ('I', 16),
+        'laststep': ('F', 0.1),
+        'alpha': ('F', 0.501),
+        'msteps': ('I', 1000),
         'rend': 'I'
     }
 
-    def __init__(self, filename):
-        if not os.path.exists(filename):
-            raise Exception('Config file {} does not exist'.format(filename))
-        # Parameters for playing
-        self.playdir = ''
-        self.depth = 4
-        self.games = 16
-        # The parameters to optimize + start point
-        self.pnames = []
-        self.pinits = []
-        self.pscale = []
-        # Optimization hyper parameters
-        self.laststep = 0.1
-        self.alpha=0.501
-        self.msteps=1000
-        self.rend=None
-        self._readConfig(filename)
+    def __init__(self, source):
+        if type(source) != dict:
+            # Called with a filename
+            source = Config.readConfig(self.fields, source)
+        # Here source is a dictionary
+        for name, val in source.items():
+            self.__setattr__(name, val)
 
-    def _readConfig(self, conffile):
+    @staticmethod
+    def accept_data_type(field_name, field_type):
+        if field_type not in ['S', 'I', 'F']:
+            raise Exception('Config: wrong field type {} for field {}'.format(field_type, field_name))
+
+    @staticmethod
+    def create_defaults(fields):
+        values = dict()
+        for field_name, field_spec in fields.items():
+            if type(field_spec) == str:
+                Config.accept_data_type(field_name, field_spec)
+                values[field_name] = None
+            else:
+                field_type, field_ini = field_spec
+                Config.accept_data_type(field_name, field_type)
+                values[field_name] = field_ini
+        return values
+
+    @staticmethod
+    def readConfig(fields, conffile):
+        if not os.path.exists(conffile):
+            raise Exception('Config file {} does not exist'.format(conffile))
+        # Transform the config file to a dictionary
+        values = Config.create_defaults(fields)
+        seen = set()
+        sectionNames = [dict(), dict()]
         section = 0
         lineno = 0
         error = False
-        seen = set()
-        sectionNames = [dict(), dict()]
         with open(conffile, 'r') as cof:
             for line in cof:
                 lineno += 1
@@ -222,24 +238,27 @@ class Config:
                     elif line == '[weights]':
                         section = 2
                     else:
-                        parts = re.split(':\s*', line, 1)
+                        parts = re.split(r':\s*', line, 1)
                         name = parts[0]
                         val = parts[1]
                         if section == 0:
-                            if name in self.fields:
-                                if self.fields[name] == 'S':
-                                    self.__setattr__(name, val)
-                                elif self.fields[name] == 'I':
-                                    self.__setattr__(name, int(val))
-                                elif self.fields[name] == 'F':
-                                    self.__setattr__(name, float(val))
+                            if name in fields:
+                                field_type = fields[name]
+                                if type(field_type) == tuple:
+                                    field_type = field_type[0]
+                                if field_type == 'S':
+                                    values[name] = val
+                                elif field_type == 'I':
+                                    values[name] = int(val)
+                                elif field_type == 'F':
+                                    values[name] = float(val)
                                 else:
-                                    raise Exception('Wrong field type in Config class: {:s}'.format(self.fields[name]))
+                                    raise Exception('Cannot be here!')
                             else:
                                 print('Config error in line {:d}: unknown config name {:s}'.format(lineno, name))
                                 error = True
                         else:
-                            vals = re.split(',\s*', val)
+                            vals = re.split(r',\s*', val)
                             if len(vals) == section + 1:
                                 if name in seen:
                                     print('Config error in line {:d}: name {:s} already seen'.format(lineno, name))
@@ -251,16 +270,19 @@ class Config:
                                 print('Config error in line {:d}: should have {:d} values, it has {:d}'.format(lineno, section+1, len(vals)))
                                 error = True
         if error:
-            raise Exception('Config has errors')
+            raise Exception('Config file {} has errors'.format(conffile))
         hasScale = False
 
         # Collect the eval parameters
+        values['pnames'] = []
+        values['pinits'] = []
+        values['pscale'] = []
         for name, vals in sectionNames[0].items():
             val = vals[0]
             scale = vals[1]
-            self.pnames.append(name)
-            self.pinits.append(val)
-            self.pscale.append(scale)
+            values['pnames'].append(name)
+            values['pinits'].append(val)
+            values['pscale'].append(scale)
             if scale != 1:
                 hasScale = True
 
@@ -269,17 +291,19 @@ class Config:
             mid = vals[0]
             end = vals[1]
             scale = vals[2]
-            self.pnames.append('mid.' + name)
-            self.pinits.append(mid)
-            self.pscale.append(scale)
-            self.pnames.append('end.' + name)
-            self.pinits.append(end)
-            self.pscale.append(scale)
+            values['pnames'].append('mid.' + name)
+            values['pinits'].append(mid)
+            values['pscale'].append(scale)
+            values['pnames'].append('end.' + name)
+            values['pinits'].append(end)
+            values['pscale'].append(scale)
             if scale != 1:
                 hasScale = True
 
         if not hasScale:
-            self.pscale = None
+            values['pscale'] = None
+
+        return values
 
 resre = re.compile(r'End result')
 wdlre = re.compile('[() ,]')
@@ -322,44 +346,25 @@ def play(tp, tm, config):
     else:
         return elowish((w + 0.5 * d) / (w + d + l))
 
-def square(x):
-    f = (x[0] * x[0] + 2 * x[1] * x[1])/100 + np.random.randn()
-    return f
-
-def square_diff(vp, vm, conf):
-    fp = square(vp)
-    fm = square(vm)
-    # Here we invert to minimize
-    return fm - fp
-
-def banana(v):
-    x = v[0]
-    y = v[1]
-    f = (1 - x) * (1 - x) + 100 * (y - x*x) * (y - x*x) + np.random.randn()
-    return f
-
-def banana_diff(vp, vm, conf):
-    fp = banana(vp)
-    fm = banana(vm)
-    # Here we invert to minimize
-    return fm - fp
-
 if __name__ == '__main__':
 
-    # config = Config(selfplay=r'C:\astra\SelfPlay-tbk.exe',
-    #                 playdir=r'C:\astra\play', ipgnfile=r'C:\astra\open-moves\open-moves.fen',
-    #                 depth=4, games=2,
-    #                 params=pnames)
     confFile = sys.argv[1]
     config = Config(confFile)
-    # print(config.pnames)
-    # print(config.pinits)
 
-#    # Tests
-#    opt = DSPSA(['x', 'y'], [3, 3], 0.03, msteps=10, scale=[3, 3])
-#    #r = opt.adadelta(banana_diff, config)
-#    r = opt.optimize(square_diff, config)
-#    #r = opt.adadelta(square_diff, config)
+    # # Test: to/from json should be identity
+    # jsonstr = json.dumps(config.__dict__)
+    # config1 = Config(json.loads(jsonstr))
+
+    # if config.__dict__ != config1.__dict__:
+    #     print('Not equal')
+
+    # # Test: to JSON, compress, base 64
+    # jsonstr = json.dumps(config.__dict__)
+    # print('JSON len:', len(jsonstr))
+    # cbytes = zlib.compress(jsonstr.encode())
+    # b64 = base64.b64encode(cbytes)
+    # print('Base64 len:', len(b64))
+    # print('In base64:', b64)
 
     # Real
     opt = DSPSA(config)
