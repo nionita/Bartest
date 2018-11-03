@@ -24,6 +24,8 @@ import os
 import os.path
 import sys
 
+from datetime import datetime, timedelta
+
 # A config class of the problem to be optimized
 class Config:
     # These are acceptable fields in section 0, with theire type
@@ -36,7 +38,7 @@ class Config:
         'games': 'I',       # so many games played at once per selfplay launch
         'sprtgames': 'I',   # maximal SPRT games to play (if not passed, is failed)
         'totalgames': 'I',  # so many games to be playes in total (at least, can be a little more)
-        'stepconst': 'F',   # step constant
+        'step': 'F',        # step update step (between 0 and 1)
         'elo0': 'F',        # SPRT parameters
         'elo1': 'F',
         'alpha': 'F',
@@ -59,7 +61,7 @@ class Config:
         self.pinits = []
         self.psteps = []
         # Optimization hyper parameters
-        self.stepconst = 8
+        self.step = 0.1
         self.elo0 = 0
         self.elo1 = 1
         self.alpha = 0.05
@@ -183,22 +185,34 @@ def optimize(config):
     p = current_theta.shape[0]
     param_steps = np.array(config.psteps, dtype=np.float32)
     total_games = 0
+    challengers = 0
+    start_time = datetime.now()
     while total_games < config.totalgames:
         tm = np.rint(current_theta)
         delta = (2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)) * param_steps
         tp = np.rint(tm + delta)
-        print('\nTotal games:', total_games)
+        if challengers > 0 and challengers % 5 == 0:
+            curr_time = datetime.now()
+            tsf = curr_time - start_time
+            gpm = total_games * 60 / tsf.total_seconds()
+            ret = int((config.totalgames - total_games) / gpm)
+            print('\n-------------------------------------------------------------------------')
+            print('{:d} challengers, {:d} games, {:7.2f} games per minute, ETA in {:d} minutes'.format(challengers, total_games, gpm, ret))
+            print('-------------------------------------------------------------------------')
         print('curr:', tm)
         print('next:', tp)
-        games, passed = play_sprt(config, tp, tm)
-        print('games =', games, ', passed =', passed)
-        if passed:
-            alpha = config.stepconst / games
-            print('alpha =', alpha)
-            current_theta += (tp - current_theta) * alpha
+        games, passed, failed = play_sprt(config, tp, tm)
+        print('games =', games, ', passed =', passed, ', failed =', failed)
         total_games += games
         if passed:
-            report_optimum(config, current_theta, title='Optimum after {:d} games'.format(total_games))
+            alpha = 1
+        else:
+            if failed:
+                tp = -tp
+            alpha = config.step
+        current_theta += (tp - current_theta) * alpha
+        report_optimum(config, current_theta, title='Optimum after {:d} games'.format(total_games))
+        challengers += 1
     return np.rint(current_theta)
 
 def play_sprt(config, tnew, told):
@@ -217,7 +231,7 @@ def play_sprt(config, tnew, told):
         passed = sprt > config.upperllr
         failed = sprt < config.lowerllr
         finished = passed or failed
-    return games, passed
+    return games, passed, failed
 
 def report_optimum(config, vec, title=None, file='report.txt'):
     if title is None:

@@ -57,33 +57,37 @@ class DSPSA:
             self.scale = np.array(config.pscale, dtype=np.float32)
         self.rend = config.rend
 
+    # Generate next 2 points for gradient calculation
+    def random_direction(self):
+        p = self.theta.shape[0]
+        delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
+        if self.scale is not None:
+            delta = delta * self.scale
+        pi = np.floor(self.theta) + np.ones(p, dtype=np.float32) / 2
+        tp = np.rint(pi + delta / 2)
+        tm = np.rint(pi - delta / 2)
+        return tp, tm, delta
+
     def optimize(self, f):
         print('scale:', self.scale)
-        p = self.theta.shape[0]
-        theta = self.theta
-        rtheta = np.rint(theta)
+        rtheta = np.rint(self.theta)
         since = 0
         for k in range(self.msteps):
             print('Step:', k)
-            delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
-            if self.scale is not None:
-                delta = delta * self.scale
-            pi = np.floor(theta) + np.ones(p, dtype=np.float32) / 2
-            tp = np.rint(pi + delta / 2)
-            tm = np.rint(pi - delta / 2)
+            tp, tm, delta = self.random_direction()
             print('plus:', tp)
             print('mius:', tm)
             df = f(tp, tm, self.config)
             gk = df / delta
-            # Is this rescale better? (added on 8th May 2018)
-            if self.scale is not None:
-                gk = gk * self.scale
             ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
+            agk = ak * gk
             print('df:', df, 'ak:', ak)
+            print('gk:', gk)
+            print('ak * gk:', agk)
             # Here: + because we maximize!
-            theta = theta + ak * gk
-            print('theta:', theta)
-            ntheta = np.rint(theta)
+            self.theta += agk
+            print('theta:', self.theta)
+            ntheta = np.rint(self.theta)
             if np.all(ntheta == rtheta):
                 since += 1
                 if self.rend is not None and since >= self.rend:
@@ -92,7 +96,7 @@ class DSPSA:
                 rtheta = ntheta
                 since = 0
             if k % 10 == 0:
-                self.report(theta)
+                self.report(self.theta)
         return rtheta
 
     """
@@ -102,14 +106,10 @@ class DSPSA:
     def momentum(self, f, config, beta1=0.8, beta2=0.1):
         p = self.theta.shape[0]
         gm = np.zeros(p, dtype=np.float32)
-        theta = self.theta
         for k in range(self.msteps):
             if k % 1 == 0:
                 print('Step:', k)
-            delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
-            pi = np.floor(theta) + np.ones(p, dtype=np.float32) / 2
-            tp = np.rint(pi + delta / 2)
-            tm = np.rint(pi - delta / 2)
+            tp, tm, delta = self.random_direction()
             df = f(tp, tm, config)
             gk = df / delta
             gm = gm * beta1 + gk * beta2
@@ -118,12 +118,12 @@ class DSPSA:
             if k % 1 == 0:
                 print('df:', df, 'ak:', ak)
             # Here: + because we maximize!
-            theta = theta + ak * gm
+            self.theta += ak * gm
             if k % 1 == 0:
-                print('theta:', theta)
+                print('theta:', self.theta)
             if k % 10 == 0:
-                self.report(theta)
-        return np.rint(theta)
+                self.report(self.theta)
+        return np.rint(self.theta)
 
     """
     Adadelta should maintain different learning rates per dimension, but in our
@@ -139,16 +139,9 @@ class DSPSA:
         gm = np.zeros(p, dtype=np.float32)
         eg2 = np.zeros(p, dtype=np.float32)
         ed2 = np.zeros(p, dtype=np.float32)
-        theta = self.theta
         for k in range(self.msteps):
             print('Step:', k)
-            delta = 2 * np.random.randint(0, 2, size=p) - np.ones(p, dtype=np.int)
-            if self.scale is not None:
-                delta = delta * self.scale
-            print('delta:', delta)
-            pi = np.floor(theta) + np.ones(p, dtype=np.float32) / 2
-            tp = np.rint(pi + delta / 2)
-            tm = np.rint(pi - delta / 2)
+            tp, tm, delta = self.random_direction()
             print('plus:', tp)
             print('mius:', tm)
             df = f(tp, tm, config)
@@ -159,12 +152,12 @@ class DSPSA:
             dtheta = np.sqrt((ed2 + eps) / (eg2 + eps)) * gm
             ed2 = gamma * ed2 + (1 - gamma) * dtheta * dtheta
             # Here: + because we maximize!
-            theta = theta + mult * dtheta
+            self.theta += mult * dtheta
             print('df:', df, 'gm norm:', np.linalg.norm(gm), 'dt norm:', np.linalg.norm(dtheta))
-            print('theta:', theta)
+            print('theta:', self.theta)
             if k % 10 == 0:
-                self.report(theta)
-        return np.rint(theta)
+                self.report(self.theta)
+        return np.rint(self.theta)
 
     def report(self, vec, title=None, file='report.txt'):
         if title is None:
