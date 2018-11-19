@@ -46,19 +46,27 @@ def elowish(frac):
 Implementation of DSPSA
 """
 class DSPSA:
-    def __init__(self, config):
+    def __init__(self, config, save=None, status=None):
         self.config = config
         self.pnames = config.pnames
         self.smalla = config.laststep * math.pow(1.1 * config.msteps + 1, config.alpha)
         self.biga = 0.1 * config.msteps
         self.alpha = config.alpha
         self.msteps = config.msteps
-        self.theta = np.array(config.pinits, dtype=np.float32)
         if config.pscale is None:
             self.scale = None
         else:
             self.scale = np.array(config.pscale, dtype=np.float32)
         self.rend = config.rend
+        self.save = save
+        if status is None:
+            self.step = 0
+            self.since = 0
+            self.theta = np.array(config.pinits, dtype=np.float32)
+        else:
+            self.step = status['step']
+            self.since = status['since']
+            self.theta = np.array(status['theta'], dtype=np.float32)
 
     # Generate next 2 points for gradient calculation
     def random_direction(self):
@@ -71,18 +79,31 @@ class DSPSA:
         tm = np.rint(pi - delta / 2)
         return tp, tm, delta
 
+    def save_status(self, file):
+        dic = {
+            'step': self.step,
+            'since': self.since,
+            'theta': self.theta.tolist()
+        }
+        jsonstr = json.dumps(dic)
+        with open(file, 'w', encoding='utf-8') as of:
+            print(jsonstr, file=of)
+
+    '''
+    Optimize by the classical DSPSA method
+    '''
     def optimize(self, f):
         print('scale:', self.scale)
-        rtheta = np.rint(self.theta)
-        since = 0
-        for k in range(self.msteps):
-            print('Step:', k)
+        if self.rend is not None:
+            rtheta = np.rint(self.theta)
+        while self.step < self.msteps:
+            print('Step:', self.step)
             tp, tm, delta = self.random_direction()
-            print('plus:', tp)
-            print('mius:', tm)
+            print('Params +:', tp)
+            print('Params -:', tm)
             df = f(tp, tm, self.config)
             gk = df / delta
-            ak = self.smalla / math.pow(1 + self.biga + k, self.alpha)
+            ak = self.smalla / math.pow(1 + self.biga + self.step, self.alpha)
             agk = ak * gk
             print('df:', df, 'ak:', ak)
             print('gk:', gk)
@@ -90,17 +111,22 @@ class DSPSA:
             # Here: + because we maximize!
             self.theta += agk
             print('theta:', self.theta)
-            ntheta = np.rint(self.theta)
-            if np.all(ntheta == rtheta):
-                since += 1
-                if self.rend is not None and since >= self.rend:
-                    break
-            else:
-                rtheta = ntheta
-                since = 0
-            if k % 10 == 0:
+            if self.rend is not None:
+                ntheta = np.rint(self.theta)
+                if np.all(ntheta == rtheta):
+                    self.since += 1
+                    if self.since >= self.rend:
+                        print('Rounded parameters unchanged for', self.rend, 'steps')
+                        break
+                else:
+                    rtheta = ntheta
+                    self.since = 0
+            if self.save is None and self.step % 10 == 0:
                 self.report(self.theta)
-        return rtheta
+            self.step += 1
+            if self.save is not None and self.step % self.save == 0:
+                self.save_status('status.txt')
+        return self.theta
 
     """
     Momentum optimizer with friction
@@ -175,8 +201,42 @@ class DSPSA:
                 for n, v in zip(self.pnames, list(vec)):
                     print(n, '=', v, file=repf)
 
+'''
+A config class for tuning configuration
+It represents a config file with the following structure:
+
+# This line is a comment
+# The file begins with section 0, which defines match parameters
+# (the selfplay program, the current directory for the selfplay execution, input pgn file
+# for the games, search depth, number of games per match) and optimization hyper parameters
+selfplay: C:/astra/SelfPlay-dnp.exe
+playdir: C:/Learn/dspsa
+ipgnfile: C:/astra/open-moves/open-moves.fen
+depth: 4
+games: 8
+laststep: 10
+msteps: 10
+
+#alpha: 0.501
+#rend: 300
+
+[params]
+# Section params defines the parameters to be optimized (can be empty or not appear at all)
+# with param name, starting value and scale
+epMovingMid:  156, 3
+epMovingEnd:  156, 3
+epMaterMinor: 1, 1
+
+[weights]
+# Section weights defines the weights to be optimized (can be empty or not appear at all)
+# with param name, starting mid game value, starting end game value, and scale
+kingSafe: 1, 0, 1
+kingOpen: 2, 4, 1
+kingPlaceCent: 8, 1, 1
+
+'''
 class Config:
-    # These are acceptable fields in section 0, with theire type
+    # These are acceptable fields in section 0, with their type and maybe default value
     # S is string, I integer and F float
     fields = {
         'selfplay': 'S',
@@ -190,6 +250,13 @@ class Config:
         'rend': 'I'
     }
 
+    '''
+    A config can be initialized either with a file name or with a dictionary
+    When called with a file name, the file will be read and transformed into a dictionary which
+    will be used for the config creation
+    When called with a dictionary, the dictionary keys will be used as attributes of the
+    new created config object
+    '''
     def __init__(self, source):
         if type(source) != dict:
             # Called with a filename
@@ -367,7 +434,7 @@ if __name__ == '__main__':
     # print('In base64:', b64)
 
     # Real
-    opt = DSPSA(config)
+    opt = DSPSA(config, save=2)
     r = opt.optimize(play)
     #r = opt.momentum(play, config)
     #r = opt.adadelta(play, config, mult=20, beta=0.995, gamma=0.995, niu=0.999, eps=1E-8)
