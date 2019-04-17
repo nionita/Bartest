@@ -52,7 +52,4 @@ cd ..
 
 cla=$cdir/class.txt
 
-./bay1.sh $cdir/$res > $cla
-
-awk '/^ *[0-9]+ / {a[$2]=$3-$4;b[$2]="+/-\t" $4 "\t" $6 "\t" $7 "\t" $8 "\t" $9} END{for (p in a) print p,"\t",a[p],"\t",b[p];}' \
-	$cla | sort -k2nr
+/c/Tools/ordo-1.2.6-win/ordo-win64.exe -J -s 2 -D -a 0 -A witness.txt -W -p $cdir/$res

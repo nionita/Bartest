@@ -1,8 +1,6 @@
-{-# LANGUAGE RankNTypes #-}
 module Main where
 
--- import Control.Applicative ((<$>))
--- import Control.Monad (when)
+import Control.Monad (forM_, when)
 import Data.Char
 import Data.List (intersperse)
 import System.Environment (getArgs)
@@ -25,11 +23,11 @@ literal :: String -> Parser ()
 literal s = P.string s >> return ()
 
 engine :: Parser String
-engine = P.many P.alphaNum
+engine = P.many (P.alphaNum <|> P.char '-')
 
 res :: Parser String
 res = P.try (P.string "0-1") <|> P.try (P.string "1/2-1/2")
-         <|> P.try (P.string "1-0")
+         <|> P.try (P.string "1-0") <|> P.string "*"
 
 game :: Parser Entry
 game = do
@@ -45,17 +43,18 @@ game = do
 parseEntry :: String -> Either P.ParseError Entry
 parseEntry = P.parse game ""
 
+-- Filter "pgn" files, i.e. accept:
+-- either games where both players are in the given list (player1 player2 ...)
+-- or games where none of the players are in the given list (-v player1 player2 ...)
+-- We can filter only pgn files which contain for every game only the players and the result,
+-- i.e. the results.pgn file which we use for rating
 main :: IO ()
 main = do
     args <- getArgs
-    -- This function determines which condition should a game satisfy
-    -- in order to remain in the output pgn
-    -- Params are the white and black players
-    let f = case args of
-                "-v" : rest -> \w b -> not ((w `elem` rest) || (b `elem` rest))
-                _           -> \w b -> (w `elem` args) && (b `elem` args)
     glss <- grpLines . zip [1..] . lines <$> readFile "results.pgn"
-    mapM_ (perGame f) glss
+    case args of
+        "-v" : rest -> forM_ glss $ perGame (\w b -> not ((w `elem` rest) || (b `elem` rest)))
+        _           -> forM_ glss $ perGame (\w b -> (w `elem` args) && (b `elem` args))
 
 perGame :: (String -> String -> Bool) -> (Int, Int, [String]) -> IO ()
 perGame f (ri, ro, ls) = do
@@ -65,11 +64,9 @@ perGame f (ri, ro, ls) = do
             putStrLn $ "\n*** Lines " ++ show ri ++ " to " ++ show ro
             putStrLn $ show err
             putStrLn gs
-        Right g  -> if f (white g) (black g)
-                       then do
-                           mapM_ putStrLn ls
-                           putStrLn ""
-                       else return ()
+        Right g  -> when (result g /= "*" && f (white g) (black g)) $ do
+                        mapM_ putStrLn ls
+                        putStrLn ""
 
 -- Group the lines per game, with beginning and ending line numbers
 grpLines :: [(Int, String)] -> [(Int, Int, [String])]

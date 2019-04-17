@@ -20,8 +20,11 @@ do
 	do
 		el="$el $f"
 	done
-	echo Inactivate in $h: $el
-	ssh $user@$h 'cd Engines; mv '$el' inactive'
+	if [ ! -z "$el" ]
+	then
+		echo Inactivate in $h: $el
+		ssh $user@$h 'cd Engines; mv '$el' inactive'
+	fi
 done
 
 rm $loc
