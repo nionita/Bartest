@@ -2,7 +2,7 @@
 
 ahosts=$(./cli-all-hosts.sh R)
 
-ratf=$(ls -t rating-201*.txt | head -1)
+ratf=$(ls -t rating-20*.txt | head -1)
 
 echo -n "Do you want to send rating file $ratf? [y/N]: "
 
