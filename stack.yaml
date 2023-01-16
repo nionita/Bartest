@@ -6,4 +6,4 @@ packages:
 #     git: git@github.com:nionita/BaseOh.git
 #     commit: 02a4597df417be6ad41e74441e29a79d77c664f5
 extra-deps: []
-resolver: lts-4.2
+resolver: lts-16.20
